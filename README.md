@@ -65,6 +65,8 @@ tool list and only checks servers.
 | **CHECK STATUS** | Looks for new servers in your project code and checks what is running |
 | **RESTART ALL** | Starts Docker if stopped, starts or restarts every server Claude Code registered, restarts every other running server |
 | **Rescan tools** | Looks again for installed tools (after you install or remove one) |
+| Arrow on a heading | Folds or unfolds that section or project (remembered) |
+| **All \| Running** | Lists every project, or only what is running (remembered) |
 | **Start / Restart / Install** | Per server: start it, restart it, or install its packages |
 | Click a server name | Opens it in your browser |
 | Folder icon | Opens the code (server row) or the project (group row) in File Explorer |

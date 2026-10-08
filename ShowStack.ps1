@@ -269,6 +269,39 @@ function New-Light {
     return $light
 }
 
+function New-ToolTip {
+    # Hover card for a tool box: name, version (prominent), what it printed, category and location.
+    param($Tool)
+
+    $card = New-Object Windows.Controls.StackPanel
+    $card.MaxWidth = 340
+    [void]$card.Children.Add((New-Text -Text $Tool.Name -Brush $brushes.Text -Size 13 -Weight 'SemiBold'))
+
+    $version = if ($Tool.State -eq 'Red') { 'Not installed' } elseif ($Tool.Version) { "Version $($Tool.Version)" } else { 'Version not reported' }
+    $versionText = New-Text -Text $version -Brush $brushes[$Tool.State] -Size 12 -Weight 'SemiBold'
+    $versionText.Margin = '0,2,0,4'
+    [void]$card.Children.Add($versionText)
+
+    $lines = @()
+    if ($Tool.Detail -and $Tool.Detail -ne "Version $($Tool.Version)") { $lines += $Tool.Detail }
+    if ($Tool.Category) { $lines += $Tool.Category }
+    if ($Tool.Path) { $lines += $Tool.Path }
+    if ($Tool.Open -and $Tool.State -ne 'Red') { $lines += 'Click to open' }
+    elseif ($Tool.Install) { $lines += 'Click to install' }
+    foreach ($line in $lines) {
+        $text = New-Text -Text $line -Brush $brushes.Muted -Size 11
+        $text.TextWrapping = 'Wrap'
+        [void]$card.Children.Add($text)
+    }
+
+    $tip = New-Object Windows.Controls.ToolTip
+    $tip.Content = $card
+    $tip.Background = $brushes.Chip
+    $tip.BorderBrush = $brushes.ChipBorder
+    $tip.Padding = '10,7,10,8'
+    return $tip
+}
+
 function Show-Tools {
     param([object[]]$Tools)
 
@@ -291,11 +324,11 @@ function Show-Tools {
         [void]$panel.Children.Add((New-Text -Text $tool.Name -Brush $brushes.Text -Size 11))
         $chip.Child = $panel
 
-        $tip = @("$($tool.Name)$(if ($tool.Version) { " $($tool.Version)" })", $tool.Category, $tool.Detail)
-        if ($tool.Path) { $tip += $tool.Path }
-        if ($tool.Open) { $tip += 'Click to open' }
-        elseif ($tool.Install) { $tip += 'Click to install' }
-        $chip.ToolTip = ($tip | Where-Object { $_ } | Select-Object -Unique) -join "`n"
+        $chip.ToolTip = New-ToolTip -Tool $tool
+        # Show quickly, keep it up while reading, and also while a scan has the list disabled.
+        [Windows.Controls.ToolTipService]::SetInitialShowDelay($chip, 150)
+        [Windows.Controls.ToolTipService]::SetShowDuration($chip, 30000)
+        [Windows.Controls.ToolTipService]::SetShowOnDisabled($chip, $true)
         if ($tool.Open -or $tool.Install) {
             $chip.Cursor = [Windows.Input.Cursors]::Hand
             $chip.Tag = $tool

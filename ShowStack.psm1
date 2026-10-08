@@ -17,8 +17,10 @@ $script:DockerDesktopPaths = @(
     (Join-Path $env:LOCALAPPDATA 'Programs\DockerDesktop\Docker Desktop.exe')
 )
 $script:DockerRunPath = Join-Path $env:LOCALAPPDATA 'Docker\run'
-# Processes that count as a dev server when one listens on a port no known server claims.
-$script:DevRuntimes = 'python', 'pythonw', 'node', 'bun', 'deno', 'dotnet', 'java', 'ruby', 'php', 'uvicorn', 'hugo', 'caddy'
+# Processes that count as a dev server when one listens on a port no known server claims
+# (developer runtimes, plus local LLM servers: Ollama, LM Studio, llama.cpp, KoboldCpp).
+$script:DevRuntimes = 'python', 'pythonw', 'node', 'bun', 'deno', 'dotnet', 'java', 'ruby', 'php', 'uvicorn', 'hugo', 'caddy',
+    'ollama', 'lm studio', 'lms', 'llama-server', 'koboldcpp'
 # Folders never worth descending into when looking for project code.
 $script:SkipFolders = 'node_modules', 'venv', 'env', '__pycache__', 'dist', 'build', 'bin', 'obj', 'target', 'out',
     'coverage', 'site-packages', 'vendor', 'packages', 'tests', 'test', '__tests__', 'logs', 'tmp', 'temp'

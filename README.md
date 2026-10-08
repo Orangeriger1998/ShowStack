@@ -17,8 +17,9 @@ ShowStack is a floating, always-on-top Windows widget for people who juggle many
 week, a FastAPI service, a docker-compose database, the servers an AI coding assistant spun up and you forgot about.
 It answers three questions at a glance:
 
-- **What do I have installed?** A box for each of 95 known developer tools it finds: languages, package managers,
-  Git, Docker, cloud CLIs, databases, editors and AI coding tools, with versions.
+- **What do I have installed?** A box for each of 97 known developer tools it finds: languages, package managers,
+  Git, Docker, cloud CLIs, databases, editors, AI coding tools and local LLMs (Ollama, LM Studio, llama.cpp), with
+  versions.
 - **What can I run, and is it running?** It reads your project code and lists every localhost server it can start,
   grouped by project, each with a green, yellow or red light and a **Start** or **Restart** button.
 - **Where is that code?** A folder icon on every project and server opens it in File Explorer.
@@ -40,6 +41,8 @@ No install, no admin rights, no internet: it is plain Windows PowerShell 5.1 and
 - **Required tools.** Mark tools you can't work without; if one goes missing it turns red and one click installs it
   (winget or the vendor's official installer, in a window you can watch).
 - **Docker aware.** Shows the engine, starts Docker Desktop, and runs compose services one by one.
+- **Local LLMs.** Shows whether your Ollama, LM Studio or llama.cpp model server is up and on which port; register it
+  once and it gets Start and Restart buttons like any other server.
 - **Safe with OneDrive.** Never opens files that live only in the cloud, so scanning never triggers downloads.
 
 ## Install
@@ -95,6 +98,7 @@ The [Wiki](../../wiki) covers:
 [How servers are found](../../wiki/How-Servers-Are-Found) ·
 [Settings](../../wiki/Settings) ·
 [Claude Code](../../wiki/Claude-Code) ·
+[Local AI models](../../wiki/Local-AI-Models) ·
 [Privacy and safety](../../wiki/Privacy-and-Safety) ·
 [Troubleshooting](../../wiki/Troubleshooting)
 

@@ -1,0 +1,8 @@
+# Personal settings (your folders and preferences); a default one is created on first run.
+showstack.json
+
+# Logs and editor leftovers
+*.log
+.vscode/
+Thumbs.db
+desktop.ini

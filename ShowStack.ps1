@@ -16,6 +16,12 @@ if (-not $mutex.WaitOne(0)) {
     exit   # already open
 }
 
+# The window runs inside powershell.exe; without its own app id the taskbar groups it under PowerShell's icon.
+Add-Type -Namespace ShowStackNative -Name Shell -MemberDefinition @'
+[DllImport("shell32.dll")] public static extern int SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string id);
+'@
+[void][ShowStackNative.Shell]::SetCurrentProcessExplicitAppUserModelID('Orangeriger1998.ShowStack')
+
 function Write-WidgetLog {
     param([string]$Text)
     Add-Content -LiteralPath $logFile -Value ("{0:yyyy-MM-dd HH:mm:ss}  {1}" -f (Get-Date), $Text)
@@ -63,6 +69,39 @@ function Write-WidgetLog {
       <Setter Property="Padding" Value="4,0"/>
       <Setter Property="FontSize" Value="11"/>
     </Style>
+    <Style TargetType="ScrollBar">
+      <Setter Property="Width" Value="8"/>
+      <Setter Property="MinWidth" Value="8"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ScrollBar">
+            <Grid Background="Transparent">
+              <Track x:Name="PART_Track" IsDirectionReversed="True">
+                <Track.DecreaseRepeatButton>
+                  <RepeatButton Command="ScrollBar.PageUpCommand" Opacity="0" Focusable="False"/>
+                </Track.DecreaseRepeatButton>
+                <Track.Thumb>
+                  <Thumb>
+                    <Thumb.Template>
+                      <ControlTemplate TargetType="Thumb">
+                        <Border x:Name="T" Background="#3A4150" CornerRadius="3" Margin="3,2,0,2"/>
+                        <ControlTemplate.Triggers>
+                          <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="T" Property="Background" Value="#566074"/></Trigger>
+                          <Trigger Property="IsDragging" Value="True"><Setter TargetName="T" Property="Background" Value="#6B7385"/></Trigger>
+                        </ControlTemplate.Triggers>
+                      </ControlTemplate>
+                    </Thumb.Template>
+                  </Thumb>
+                </Track.Thumb>
+                <Track.IncreaseRepeatButton>
+                  <RepeatButton Command="ScrollBar.PageDownCommand" Opacity="0" Focusable="False"/>
+                </Track.IncreaseRepeatButton>
+              </Track>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
   </Window.Resources>
   <Border Background="#1E222B" CornerRadius="10" BorderBrush="#343A46" BorderThickness="1" Padding="14,10,14,12">
     <DockPanel>
@@ -101,7 +140,8 @@ function Write-WidgetLog {
           </StackPanel>
           <StackPanel x:Name="Content">
           <Grid Margin="0,4,0,4">
-            <TextBlock x:Name="ToolsHeader" Text="TOOLS" FontSize="10" FontWeight="SemiBold" Foreground="#6B7385" VerticalAlignment="Center"/>
+            <StackPanel x:Name="ToolsHeader" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center"
+                        Cursor="Hand" Background="Transparent"/>
             <Button x:Name="RescanButton" Style="{StaticResource Link}" Content="Rescan tools" HorizontalAlignment="Right"
                     ToolTip="Look again for installed developer tools (after you install or remove one)"/>
           </Grid>
@@ -162,6 +202,9 @@ $script:job = $null
 $script:splashText = ''
 $script:splashTicks = 0
 $script:expanded = @{}
+$script:collapsed = @{}      # section name -> folded
+$script:runningOnly = $false
+$script:lastTools = @()
 $script:lastStatus = $null
 $timer = New-Object Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromMilliseconds(250)
@@ -305,9 +348,14 @@ function New-ToolTip {
 function Show-Tools {
     param([object[]]$Tools)
 
+    $script:lastTools = $Tools
     $ui.Chips.Children.Clear()
     $installed = @($Tools | Where-Object { $_.State -ne 'Red' }).Count
-    $ui.ToolsHeader.Text = "TOOLS  ($installed found)"
+    $attention = @($Tools | Where-Object { $_.State -ne 'Green' }).Count
+    $folded = [bool]$script:collapsed['Tools']
+    Set-SectionLabel -Panel $ui.ToolsHeader -Title 'Tools' -Open (-not $folded) `
+        -Suffix "$installed found$(if ($folded -and $attention) { ", $attention need a look" })"
+    $ui.Chips.Visibility = if ($folded) { 'Collapsed' } else { 'Visible' }
     foreach ($tool in $Tools) {
         $chip = New-Object Windows.Controls.Border
         $chip.Background = $brushes.Chip
@@ -372,11 +420,73 @@ function New-FolderIcon {
     return $icon
 }
 
+function New-Chevron {
+    # The one collapse control used on every section and project heading: always at the far left, same size and colour.
+    param([bool]$Open)
+    $chevron = New-Text -Text $(if ($Open) { [string][char]0x25BE } else { [string][char]0x25B8 }) -Brush $brushes.Group -Size 12
+    $chevron.Width = 14
+    return $chevron
+}
+
+function Set-SectionLabel {
+    # Fills a heading panel: chevron, TITLE, then a muted note such as counts. The whole panel is the click target.
+    param($Panel, [string]$Title, [bool]$Open, [string]$Suffix = '')
+    $Panel.Children.Clear()
+    [void]$Panel.Children.Add((New-Chevron -Open $Open))
+    [void]$Panel.Children.Add((New-Text -Text $Title.ToUpperInvariant() -Brush $brushes.Section -Size 10 -Weight 'SemiBold'))
+    if ($Suffix) {
+        $note = New-Text -Text "  ($Suffix)" -Brush $brushes.Section -Size 10
+        [void]$Panel.Children.Add($note)
+    }
+    $Panel.ToolTip = if ($Open) { "Click to hide $($Title.ToLowerInvariant())" } else { "Click to show $($Title.ToLowerInvariant())" }
+}
+
 function New-SectionHeader {
-    param([string]$Text)
-    $header = New-Text -Text $Text.ToUpperInvariant() -Brush $brushes.Section -Size 10 -Weight 'SemiBold'
-    $header.Margin = '0,10,0,3'
-    return $header
+    param([string]$Section, [string]$Suffix = '')
+    $panel = New-Object Windows.Controls.StackPanel
+    $panel.Orientation = 'Horizontal'
+    $panel.Background = [Windows.Media.Brushes]::Transparent
+    $panel.Cursor = [Windows.Input.Cursors]::Hand
+    $panel.Tag = $Section
+    Set-SectionLabel -Panel $panel -Title $Section -Open (-not $script:collapsed[$Section]) -Suffix $Suffix
+    $panel.Add_MouseLeftButtonUp({
+        param($sender)
+        $script:collapsed[$sender.Tag] = -not $script:collapsed[$sender.Tag]
+        Show-Status -Status $script:lastStatus
+    })
+    return $panel
+}
+
+function New-ViewSwitch {
+    # "All | Running" for the server list. A switch, not a link: it changes what is shown, it doesn't run anything.
+    $switch = New-Object Windows.Controls.Border
+    $switch.BorderBrush = $brushes.ChipBorder
+    $switch.BorderThickness = 1
+    $switch.CornerRadius = 4
+    $switch.Margin = '12,0,0,0'
+    $switch.VerticalAlignment = 'Center'
+    $options = New-Object Windows.Controls.StackPanel
+    $options.Orientation = 'Horizontal'
+    foreach ($option in @(@('All', $false, 'Show every project'), @('Running', $true, 'Show only servers that are running'))) {
+        $selected = ($script:runningOnly -eq $option[1])
+        $segment = New-Object Windows.Controls.Border
+        $segment.CornerRadius = 3
+        $segment.Padding = '7,0,7,1'
+        $segment.Background = if ($selected) { $brushes.Chip } else { [Windows.Media.Brushes]::Transparent }
+        $segment.Child = New-Text -Text $option[0] -Brush $(if ($selected) { $brushes.Text } else { $brushes.Muted }) -Size 10 -Weight $(if ($selected) { 'SemiBold' } else { 'Normal' })
+        $segment.Cursor = [Windows.Input.Cursors]::Hand
+        $segment.ToolTip = $option[2]
+        $segment.Tag = $option[1]
+        $segment.Add_MouseLeftButtonUp({
+            param($sender, $e)
+            $e.Handled = $true   # don't also fold the SERVERS section
+            $script:runningOnly = [bool]$sender.Tag
+            Show-Status -Status $script:lastStatus
+        })
+        [void]$options.Children.Add($segment)
+    }
+    $switch.Child = $options
+    return $switch
 }
 
 function New-Row {
@@ -469,17 +579,29 @@ function Show-Status {
     foreach ($section in 'Services', 'Servers', 'Other local servers') {
         $sectionRows = @($rows | Where-Object Section -eq $section)
         if (-not $sectionRows.Count -and -not ($section -eq 'Servers' -and $Status.Hidden)) { continue }
-        $header = New-SectionHeader -Text $section
-        if ($section -eq 'Servers' -and $Status.Hidden) {
-            $header.Text += "   ($($Status.Hidden) hidden, right-click to show)"
-            $menu = New-Object Windows.Controls.ContextMenu
-            $menuItem = New-Object Windows.Controls.MenuItem
-            $menuItem.Header = 'Show hidden servers again'
-            $menuItem.Add_Click({ Invoke-Background -Body 'Clear-HiddenServers' -Text 'Showing hidden servers...' })
-            [void]$menu.Items.Add($menuItem)
-            $header.ContextMenu = $menu
+        $suffix = switch ($section) {
+            'Servers' { "$(@($sectionRows | Where-Object State -eq 'Green').Count) of $($sectionRows.Count) running" }
+            'Other local servers' { "$($sectionRows.Count)" }
+            default { '' }
+        }
+        $header = New-SectionHeader -Section $section -Suffix $suffix
+        $header.Margin = '0,10,0,3'
+        if ($section -eq 'Servers') {
+            [void]$header.Children.Add((New-ViewSwitch))
+            if ($Status.Hidden) {
+                $hiddenNote = New-Text -Text "   $($Status.Hidden) hidden" -Brush $brushes.Section -Size 10
+                $hiddenNote.ToolTip = 'Right-click to show hidden servers again'
+                $menu = New-Object Windows.Controls.ContextMenu
+                $menuItem = New-Object Windows.Controls.MenuItem
+                $menuItem.Header = 'Show hidden servers again'
+                $menuItem.Add_Click({ Invoke-Background -Body 'Clear-HiddenServers' -Text 'Showing hidden servers...' })
+                [void]$menu.Items.Add($menuItem)
+                $header.ContextMenu = $menu
+                [void]$header.Children.Add($hiddenNote)
+            }
         }
         [void]$ui.Rows.Children.Add($header)
+        if ($script:collapsed[$section]) { continue }
 
         if ($section -ne 'Servers') {
             foreach ($item in $sectionRows) { [void]$ui.Rows.Children.Add((New-Row -Item $item)) }
@@ -488,6 +610,7 @@ function Show-Status {
 
         # Servers: one collapsible group per project. Open by default when something in it runs, needs attention,
         # or was registered by Claude Code.
+        $idleProjects = 0
         foreach ($group in ($sectionRows | Group-Object Group)) {
             $items = @($group.Group)
             $running = @($items | Where-Object State -eq 'Green').Count
@@ -496,6 +619,11 @@ function Show-Status {
                 $script:expanded[$group.Name] = [bool]($running -or $problem -or @($items | Where-Object { $_.Server.Registered }).Count)
             }
             $open = $script:expanded[$group.Name]
+            if ($script:runningOnly) {
+                # Only projects with something running (or a problem), and only those servers.
+                if (-not ($running -or $problem)) { $idleProjects++; continue }
+                $open = $true
+            }
 
             $groupHeader = New-Object Windows.Controls.StackPanel
             $groupHeader.Orientation = 'Horizontal'
@@ -505,12 +633,13 @@ function Show-Status {
             $groupHeader.Tag = $group.Name
             $groupHeader.ToolTip = if ($open) { 'Click to collapse' } else { 'Click to expand' }
             $state = if ($problem) { 'Red' } elseif ($running) { 'Green' } else { 'Yellow' }
+            [void]$groupHeader.Children.Add((New-Chevron -Open $open))
             $projectFolder = @($items | ForEach-Object { $_.Server.GroupPath } | Where-Object { $_ } | Select-Object -First 1)
             if ($projectFolder) { [void]$groupHeader.Children.Add((New-FolderIcon -Path $projectFolder[0])) }
             $light = New-Light -State $state -Size 7
             $light.Margin = '2,0,7,0'
             [void]$groupHeader.Children.Add($light)
-            [void]$groupHeader.Children.Add((New-Text -Text "$(if ($open) { [char]0x25BE } else { [char]0x25B8 }) $($group.Name)" -Brush $brushes.Group -Size 12 -Weight 'SemiBold'))
+            [void]$groupHeader.Children.Add((New-Text -Text $group.Name -Brush $brushes.Group -Size 12 -Weight 'SemiBold'))
             [void]$groupHeader.Children.Add((New-Text -Text "   $running of $($items.Count) running" -Brush $brushes.Muted -Size 11))
             $groupHeader.Add_MouseLeftButtonUp({
                 param($sender)
@@ -521,11 +650,18 @@ function Show-Status {
 
             if ($open) {
                 foreach ($item in $items) {
+                    if ($script:runningOnly -and $item.State -notin 'Green', 'Red') { continue }
                     $row = New-Row -Item $item
-                    $row.Margin = '14,2,0,2'
+                    $row.Margin = '14,2,0,2'   # folder icons line up under the project's
                     [void]$ui.Rows.Children.Add($row)
                 }
             }
+        }
+        if ($script:runningOnly) {
+            $note = New-Text -Text "$(if ($idleProjects) { "$idleProjects project$(if ($idleProjects -ne 1) { 's' }) with nothing running hidden" } else { 'Every project has something running' }). Choose All to see them." -Brush $brushes.Muted -Size 11
+            $note.Margin = '2,6,0,0'
+            $note.TextWrapping = 'Wrap'
+            [void]$ui.Rows.Children.Add($note)
         }
     }
 
@@ -582,6 +718,10 @@ function Invoke-MenuAction {
 $ui.CheckButton.Add_Click({ Invoke-Background -Body 'Update-DevInventory -ServersOnly | Out-Null' -Text 'Looking for servers in your projects and checking what is running...' })
 $ui.RescanButton.Add_Click({ Invoke-Background -Body 'Update-DevInventory | Out-Null' -Text 'Searching for installed tools and servers' -Splash })
 $ui.RestartButton.Add_Click({ Invoke-Background -Body 'Restart-AllDev' -Text 'Starting Docker if needed, then restarting servers...' })
+$ui.ToolsHeader.Add_MouseLeftButtonUp({
+    $script:collapsed['Tools'] = -not $script:collapsed['Tools']
+    Show-Tools -Tools $script:lastTools
+})
 $ui.MinButton.Add_Click({ $window.WindowState = 'Minimized' })
 $ui.CloseButton.Add_Click({ $window.Close() })
 $ui.Header.Add_MouseLeftButtonDown({ $window.DragMove() })
@@ -600,12 +740,19 @@ if (Test-Path -LiteralPath $positionFile -PathType Leaf) {
             $window.Left = $saved.Left
             $window.Top = $saved.Top
         }
+        foreach ($section in @($saved.CollapsedSections)) { if ($section) { $script:collapsed[[string]$section] = $true } }
+        $script:runningOnly = [bool]$saved.RunningOnly
     }
     catch { }
 }
 
 $window.Add_Closing({
-    try { @{ Left = $window.Left; Top = $window.Top } | ConvertTo-Json | Set-Content -LiteralPath $positionFile -Encoding UTF8 } catch { }
+    try {
+        @{ Left = $window.Left; Top = $window.Top; RunningOnly = $script:runningOnly
+            CollapsedSections = @($script:collapsed.Keys | Where-Object { $script:collapsed[$_] }) } |
+            ConvertTo-Json | Set-Content -LiteralPath $positionFile -Encoding UTF8
+    }
+    catch { }
 })
 
 # On open: the splash shows while ShowStack checks status (servers in the code, what is running).

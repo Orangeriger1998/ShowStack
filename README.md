@@ -17,8 +17,8 @@ ShowStack is a floating, always-on-top Windows widget for people who juggle many
 week, a FastAPI service, a docker-compose database, the servers an AI coding assistant spun up and you forgot about.
 It answers three questions at a glance:
 
-- **What do I have installed?** A box for each of 97 known developer tools it finds: languages, package managers,
-  Git, Docker, cloud CLIs, databases, editors, AI coding tools and local LLMs (Ollama, LM Studio, llama.cpp), with
+- **What do I have installed?** A box for each of 99 known developer tools it finds: languages, package managers,
+  Git, Docker, cloud CLIs, databases, editors, AI coding tools, local LLMs (Ollama, LM Studio, llama.cpp) and typesetting (Typst, Tectonic), with
   versions.
 - **What can I run, and is it running?** It reads your project code and lists every localhost server it can start,
   grouped by project, each with a green, yellow or red light and a **Start** or **Restart** button.

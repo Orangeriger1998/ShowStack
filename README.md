@@ -43,6 +43,8 @@ No install, no admin rights, no internet: it is plain Windows PowerShell 5.1 and
 - **Docker aware.** Shows the engine, starts Docker Desktop, and runs compose services one by one.
 - **Local LLMs.** Shows whether your Ollama, LM Studio or llama.cpp model server is up and on which port; register it
   once and it gets Start and Restart buttons like any other server.
+- **One-click export.** The copy icon puts your whole stack on the clipboard as Markdown, ready to paste into an AI
+  assistant, an issue or a document.
 - **Safe with OneDrive.** Never opens files that live only in the cloud, so scanning never triggers downloads.
 
 ## Install
@@ -67,6 +69,7 @@ tool list and only checks servers.
 | **Rescan tools** | Looks again for installed tools (after you install or remove one) |
 | Arrow on a heading | Folds or unfolds that section or project (remembered) |
 | **All \| Running** | Lists every project, or only what is running (remembered) |
+| Copy icon (header) | Copies a complete Markdown report of tools, services and servers to the clipboard |
 | **Start / Restart / Install** | Per server: start it, restart it, or install its packages |
 | Click a server name | Opens it in your browser |
 | Folder icon | Opens the code (server row) or the project (group row) in File Explorer |

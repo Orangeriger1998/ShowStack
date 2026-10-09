@@ -98,6 +98,9 @@
     { "name": "Notepad++", "category": "Editors & AI", "paths": ["%ProgramFiles%\\Notepad++\\notepad++.exe"], "open": "app" },
     { "name": "Postman", "category": "Editors & AI", "paths": ["%LOCALAPPDATA%\\Postman\\Postman.exe"], "open": "app" },
 
+    { "name": "Typst", "category": "Typesetting", "commands": ["typst"], "versionArgs": ["--version"], "winget": "Typst.Typst" },
+    { "name": "Tectonic", "category": "Typesetting", "commands": ["tectonic"], "paths": ["%LOCALAPPDATA%\\Programs\\Tectonic\\tectonic.exe"], "versionArgs": ["--version"] },
+
     { "name": "Android SDK (adb)", "category": "Build tools", "commands": ["adb"], "paths": ["%LOCALAPPDATA%\\Android\\Sdk\\platform-tools\\adb.exe"], "versionArgs": ["--version"] },
     { "name": "CMake", "category": "Build tools", "commands": ["cmake"], "paths": ["%ProgramFiles%\\CMake\\bin\\cmake.exe"], "versionArgs": ["--version"] },
     { "name": "Make", "category": "Build tools", "commands": ["make"], "versionArgs": ["--version"] },

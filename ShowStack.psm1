@@ -1041,6 +1041,88 @@ function Install-ServerDependencies {
     Invoke-InConsole -Name "$($Server.Project) packages" -Command $Server.InstallCommand -WorkingDirectory $Server.InstallDir
 }
 
+function ConvertTo-StackExport {
+    # The whole stack as Markdown: readable as plain text, and formatted when pasted into a chat, GitHub or a document.
+    # Always complete, whatever is folded or filtered in the window.
+    param([Parameter(Mandatory)] $Status)
+
+    $cell = { param($value) ("$value" -replace '\r?\n', ' ' -replace '\|', '\|').Trim() }
+    $stateWord = @{ Green = 'OK'; Yellow = 'Needs a look'; Red = 'Missing' }
+    $tools = @($Status.Tools)
+    $rows = @($Status.Rows | Where-Object { $_ })
+    $servers = @($rows | Where-Object Section -eq 'Servers')
+    $running = @($servers | Where-Object State -eq 'Green').Count
+    $problems = @($rows + $tools | Where-Object State -eq 'Red').Count
+    if ($null -eq $script:OsDescription) {
+        # Looked up once; asking Windows takes a few hundred milliseconds.
+        $script:OsDescription = try { $os = Get-CimInstance Win32_OperatingSystem -Property Caption, Version; " ($($os.Caption.Trim()), $($os.Version))" } catch { '' }
+    }
+
+    $lines = [Collections.Generic.List[string]]::new()
+    $lines.Add('# ShowStack export')
+    $lines.Add('')
+    $lines.Add(("Generated {0:yyyy-MM-dd HH:mm} on {1}{2}." -f (Get-Date), $env:COMPUTERNAME, $script:OsDescription))
+    $summary = "$(@($tools | Where-Object State -ne 'Red').Count) tools, $running of $($servers.Count) servers running"
+    if ($problems) { $summary += ", $problems need attention" }
+    $lines.Add("Summary: $summary.")
+
+    $lines.Add('')
+    $lines.Add("## Tools ($(@($tools | Where-Object State -ne 'Red').Count))")
+    $lines.Add('')
+    $lines.Add('| Tool | Version | Category | Status | Location |')
+    $lines.Add('|---|---|---|---|---|')
+    foreach ($tool in $tools) {
+        $status = if ($tool.State -eq 'Green') { 'OK' } elseif ($tool.State -eq 'Red') { 'Missing (required)' } else { "Needs a look: $($tool.Detail)" }
+        $lines.Add("| $(& $cell $tool.Name) | $(& $cell $tool.Version) | $(& $cell $tool.Category) | $(& $cell $status) | $(& $cell $tool.Path) |")
+    }
+
+    $services = @($rows | Where-Object Section -eq 'Services')
+    if ($services.Count) {
+        $lines.Add('')
+        $lines.Add('## Services')
+        $lines.Add('')
+        $lines.Add('| Service | Status | Detail |')
+        $lines.Add('|---|---|---|')
+        foreach ($row in $services) { $lines.Add("| $(& $cell $row.Name) | $($stateWord[$row.State]) | $(& $cell $row.Detail) |") }
+    }
+
+    $lines.Add('')
+    $lines.Add("## Servers ($running of $($servers.Count) running)")
+    foreach ($group in ($servers | Group-Object Group)) {
+        $lines.Add('')
+        $lines.Add("### $($group.Name)")
+        $lines.Add('')
+        $lines.Add('| Server | Status | Port | URL | Start command | Folder | Found in |')
+        $lines.Add('|---|---|---|---|---|---|---|')
+        foreach ($row in $group.Group) {
+            $server = $row.Server
+            $command = if ($server.Kind -eq 'compose') { "docker compose up -d $($server.Service)" }
+                else { (@($server.Executable) + @($server.Arguments) | Where-Object { $_ } | ForEach-Object { if ("$_" -match '\s') { "`"$_`"" } else { $_ } }) -join ' ' }
+            if ($server.NeedsPort) { $command = "PORT=$($server.Port) $command" }
+            $state = ("$($row.Detail)" -split ' - ')[0]
+            $lines.Add("| $(& $cell $row.Name) | $(& $cell $state) | $($server.Port) | $(& $cell $row.Url) | ``$(& $cell $command)`` | $(& $cell $server.Dir) | $(& $cell $server.Source) |")
+        }
+    }
+    if ($Status.Hidden) {
+        $lines.Add('')
+        $lines.Add("_$($Status.Hidden) hidden server(s) not listed._")
+    }
+
+    $others = @($rows | Where-Object Section -eq 'Other local servers')
+    if ($others.Count) {
+        $lines.Add('')
+        $lines.Add("## Other local servers ($($others.Count))")
+        $lines.Add('')
+        $lines.Add('| Port | URL | Process and command line |')
+        $lines.Add('|---|---|---|')
+        foreach ($row in $others) { $lines.Add("| $(& $cell ($row.Name -replace '^Port ', '')) | $(& $cell $row.Url) | $(& $cell $row.Detail) |") }
+    }
+
+    $lines.Add('')
+    $lines.Add('_Exported by ShowStack (https://github.com/Orangeriger1998/ShowStack)._')
+    return ($lines -join "`r`n")
+}
+
 function Open-DevTool {
     param([Parameter(Mandatory)] $Tool)
     if ($Tool.Open -eq 'shell') {
@@ -1052,4 +1134,4 @@ function Open-DevTool {
 }
 
 Export-ModuleMember -Function Get-WidgetConfig, Update-DevInventory, Get-DevInventory, Get-DevStatus, Start-DevServer, Start-DockerEngine,
-    Restart-AllDev, Install-DevTool, Install-ServerDependencies, Open-DevTool, Hide-DevServer, Clear-HiddenServers
+    Restart-AllDev, Install-DevTool, Install-ServerDependencies, Open-DevTool, Hide-DevServer, Clear-HiddenServers, ConvertTo-StackExport

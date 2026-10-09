@@ -107,7 +107,7 @@ function Write-WidgetLog {
     <DockPanel>
       <Grid x:Name="Header" DockPanel.Dock="Top" Background="Transparent" Margin="0,0,0,6" Cursor="SizeAll">
         <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
         <Border Width="36" Height="36" CornerRadius="8" Margin="0,0,10,0" VerticalAlignment="Center">
           <Border.Background><ImageBrush x:Name="AvatarBrush" Stretch="UniformToFill"/></Border.Background>
@@ -116,8 +116,10 @@ function Write-WidgetLog {
           <TextBlock Text="ShowStack" FontSize="15" FontWeight="SemiBold" Foreground="#E6E9EF"/>
           <TextBlock x:Name="Summary" Text="Loading..." FontSize="11" Foreground="#8A93A6" TextTrimming="CharacterEllipsis"/>
         </StackPanel>
-        <Button x:Name="MinButton" Grid.Column="2" Style="{StaticResource Icon}" Content="&#x2013;" ToolTip="Minimize"/>
-        <Button x:Name="CloseButton" Grid.Column="3" Style="{StaticResource Icon}" Content="&#xD7;" ToolTip="Close"/>
+        <Button x:Name="CopyButton" Grid.Column="2" Style="{StaticResource Icon}" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                FontSize="13" Content="&#xE8C8;" ToolTip="Copy the whole stack to the clipboard (tools, services, servers)"/>
+        <Button x:Name="MinButton" Grid.Column="3" Style="{StaticResource Icon}" Content="&#x2013;" ToolTip="Minimize"/>
+        <Button x:Name="CloseButton" Grid.Column="4" Style="{StaticResource Icon}" Content="&#xD7;" ToolTip="Close"/>
       </Grid>
       <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
         <Grid>
@@ -158,7 +160,7 @@ function Write-WidgetLog {
 $window = [Windows.Markup.XamlReader]::Load((New-Object Xml.XmlNodeReader $xaml))
 try { $window.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri](Join-Path $PSScriptRoot 'assets\showstack.ico')) } catch { }
 $ui = @{}
-foreach ($name in 'Header', 'Summary', 'MinButton', 'CloseButton', 'CheckButton', 'RestartButton', 'RescanButton', 'Message', 'Rows', 'Chips',
+foreach ($name in 'Header', 'Summary', 'CopyButton', 'MinButton', 'CloseButton', 'CheckButton', 'RestartButton', 'RescanButton', 'Message', 'Rows', 'Chips',
         'ToolsHeader', 'Scroller', 'AvatarBrush', 'SplashBrush', 'Splash', 'SplashText', 'Content') {
     $ui[$name] = $window.FindName($name)
 }
@@ -721,6 +723,34 @@ $ui.RestartButton.Add_Click({ Invoke-Background -Body 'Restart-AllDev' -Text 'St
 $ui.ToolsHeader.Add_MouseLeftButtonUp({
     $script:collapsed['Tools'] = -not $script:collapsed['Tools']
     Show-Tools -Tools $script:lastTools
+})
+# Copy: the whole stack as Markdown on the clipboard; the icon turns into a check mark for a moment.
+$copyGlyph = [string][char]0xE8C8
+$copiedGlyph = [string][char]0xE73E
+$copyReset = New-Object Windows.Threading.DispatcherTimer
+$copyReset.Interval = [TimeSpan]::FromSeconds(2)
+$copyReset.Add_Tick({ $copyReset.Stop(); $ui.CopyButton.Content = $copyGlyph })
+$ui.CopyButton.Add_Click({
+    if (-not $script:lastStatus) {
+        Show-Message -Text 'Nothing to copy yet; wait for the check to finish.' -Color $brushes.Muted
+        return
+    }
+    try {
+        $export = ConvertTo-StackExport -Status $script:lastStatus
+        # The clipboard can be briefly locked by another program; try a few times.
+        for ($attempt = 1; ; $attempt++) {
+            try { [Windows.Clipboard]::SetText($export); break }
+            catch { if ($attempt -ge 5) { throw }; Start-Sleep -Milliseconds 60 }
+        }
+        $servers = @($script:lastStatus.Rows | Where-Object Section -eq 'Servers').Count
+        $ui.CopyButton.Content = $copiedGlyph
+        $copyReset.Stop(); $copyReset.Start()
+        Show-Message -Text "Copied the whole stack to the clipboard: $(@($script:lastStatus.Tools).Count) tools, $servers servers, as Markdown." -Color $brushes.Green
+    }
+    catch {
+        Write-WidgetLog $_.Exception.ToString()
+        Show-Message -Text "Couldn't copy to the clipboard: $($_.Exception.Message)" -Color $brushes.Red
+    }
 })
 $ui.MinButton.Add_Click({ $window.WindowState = 'Minimized' })
 $ui.CloseButton.Add_Click({ $window.Close() })

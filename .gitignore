@@ -3,6 +3,7 @@ showstack.json
 
 # Logs and editor leftovers
 *.log
+__pycache__/
 .vscode/
 Thumbs.db
 desktop.ini

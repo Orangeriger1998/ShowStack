@@ -25,6 +25,7 @@ It answers three questions at a glance:
 - **Where is that code?** A folder icon on every project and server opens it in File Explorer.
 
 No install, no admin rights, no internet: it is plain Windows PowerShell 5.1 and WPF, which ship with Windows 10 and 11.
+On Linux Mint it is plain Python 3 and GTK 3, which Mint ships with: see **[linux/README.md](linux/README.md)**.
 
 ## Features
 
@@ -48,6 +49,8 @@ No install, no admin rights, no internet: it is plain Windows PowerShell 5.1 and
 - **Safe with OneDrive.** Never opens files that live only in the cloud, so scanning never triggers downloads.
 
 ## Install
+
+On Linux Mint, see [linux/README.md](linux/README.md) (`bash linux/install.sh`). On Windows:
 
 1. Download this repository (**Code > Download ZIP**) and extract it anywhere, or `git clone` it.
 2. Run:
@@ -81,7 +84,7 @@ Lights: **green** = running or installed, **yellow** = stopped, optional or need
 
 ## Settings
 
-Settings live in `showstack.json` next to the app (created on first run). The ones you are most likely to change:
+Settings live in `showstack.json` next to the app (created on first run; on Linux, in `~/.config/showstack/`). The ones you are most likely to change:
 
 ```json
 {

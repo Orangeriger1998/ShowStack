@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ShowStack</title>
+<meta name="description" content="ShowStack: your whole local dev stack in one small window. Installed developer tools, every localhost server your code can start, and one-click start and restart, on Windows and Linux.">
+<link rel="icon" href="images/icon-256.png">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="./"><img src="images/icon-256.png" alt=""> ShowStack</a>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#download">Download</a>
+      <a href="#platforms">Windows and Linux</a>
+      <a href="#claude">Claude Code</a>
+      <a href="https://github.com/Orangeriger1998/ShowStack/wiki">Wiki</a>
+      <a href="https://github.com/Orangeriger1998/ShowStack">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="hero">
+    <div>
+      <h1>Your whole local dev stack in one small window.</h1>
+      <p class="lead">Every developer tool on your computer, every localhost server your code can start, and one button to start it. ShowStack is a floating, always-on-top widget for Windows 10 and 11 and for Linux Mint.</p>
+      <div class="buttons">
+        <a class="btn" data-button="windows" href="https://github.com/Orangeriger1998/ShowStack/releases">Windows<span class="sub">ZIP from the Releases page</span></a>
+        <a class="btn alt" data-button="linux" href="https://github.com/Orangeriger1998/ShowStack/releases">Linux<span class="sub">tar.gz from the Releases page</span></a>
+      </div>
+      <p class="small muted" style="margin-top:12px">No install beyond a folder, no admin rights, no internet unless you ask it to install a tool. MIT licensed. <a href="#download">Install steps</a>.</p>
+    </div>
+    <div class="art"><img src="images/hero-dark.png" alt="A developer at a glowing laptop"></div>
+  </div>
+
+  <section>
+    <h2>Three questions, answered at a glance</h2>
+    <div class="grid three">
+      <div class="card">
+        <h3><span class="dot"></span> What do I have installed?</h3>
+        <p>A box for each known developer tool it finds, with its version: languages, package managers, Git, Docker, cloud CLIs, databases, editors, AI coding tools, local LLMs (Ollama, LM Studio, llama.cpp) and typesetting (Typst, Tectonic). 99 tools on Windows, 105 on Linux.</p>
+      </div>
+      <div class="card">
+        <h3><span class="dot yellow"></span> What can I run, and is it running?</h3>
+        <p>It reads your project code and lists every localhost server it can start, grouped by project, each with a green, yellow or red light and a Start or Restart button. Projects with missing packages show Install instead.</p>
+      </div>
+      <div class="card">
+        <h3><span class="dot red"></span> Where is that code?</h3>
+        <p>A folder icon on every project and server opens it in File Explorer, or in your file manager on Linux. Click a server name to open it in the browser. One click on the copy icon puts the whole stack on your clipboard as Markdown.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="shots">
+      <figure><img src="images/main.png" alt="ShowStack showing tools, Docker and project servers"><figcaption>Tools, Docker and servers grouped by project</figcaption></figure>
+      <figure><img src="images/running.png" alt="ShowStack with the Running filter on"><figcaption>Running: only what is up right now</figcaption></figure>
+      <figure><img src="images/splash.png" alt="ShowStack scanning for tools and servers"><figcaption>The splash while it scans</figcaption></figure>
+    </div>
+  </section>
+
+  <section id="features">
+    <h2>Features</h2>
+    <ul class="features">
+      <li><b>Finds servers by reading your code.</b> <code>package.json</code> scripts (Vite, Next.js, Nuxt, Astro, Angular, CRA, webpack, Storybook, Wrangler, Expo, Node and tsx servers), Django <code>manage.py</code>, Python files that run uvicorn, Flask, aiohttp or <code>http.server</code>, docker compose services, ASP.NET <code>launchSettings.json</code>, and Claude Code's <code>.claude/launch.json</code>.</li>
+      <li><b>Knows the port.</b> From <code>--port</code> flags, <code>vite.config</code>, <code>const PORT = ...</code> or the framework default. Projects that only read a <code>PORT</code> variable get a fixed port of their own.</li>
+      <li><b>Starts, restarts and stops safely.</b> It only restarts a process it can tie to that server, and never touches a port held by something else.</li>
+      <li><b>Spots missing packages.</b> A project with no <code>node_modules</code> shows Install instead of a Start button that would fail.</li>
+      <li><b>Required tools.</b> Mark the tools you cannot work without; if one goes missing it turns red, and one click installs it with winget, apt, Flatpak or the vendor's installer, in a window you can watch.</li>
+      <li><b>Docker.</b> Shows whether the engine is running, starts it when it is not, and lists compose services with their ports.</li>
+      <li><b>Local AI models.</b> Ollama, LM Studio and llama.cpp as tools, and their model servers as rows with a light and a Start or Restart button.</li>
+      <li><b>Folding and filtering.</b> Fold any section or project. Switch between All and Running. Hide servers you never use. ShowStack remembers all of it, and its position.</li>
+      <li><b>Copy the whole stack.</b> A complete Markdown report of tools, services and servers on your clipboard, ready to paste into an AI assistant, an issue or a document.</li>
+      <li><b>Nothing phones home.</b> No network, except the installs you confirm. It reads your code and your process list, and writes only its own settings and state.</li>
+    </ul>
+  </section>
+
+  <section id="download">
+    <h2>Download and install</h2>
+    <p class="muted">The version and sizes below are read from GitHub when this page opens. Both downloads hold the same repository; the Windows files and the Linux files sit side by side, so one folder serves a dual-boot machine.</p>
+    <div class="grid two">
+      <div class="card" data-platform="windows">
+        <h3>Windows</h3>
+        <div class="release"><span class="version">Latest release</span><span class="date"></span><a class="notes-link" href="https://github.com/Orangeriger1998/ShowStack/releases">Release notes</a></div>
+        <ul class="files"><li><a class="name" href="https://github.com/Orangeriger1998/ShowStack/releases">ShowStack-x.y.z-Windows.zip on the Releases page</a></li></ul>
+        <p style="margin-top:16px"><b>Requirements.</b> Windows 10 or 11. Windows PowerShell 5.1 and WPF, both built in. No admin rights.</p>
+        <ol class="steps">
+          <li>Extract the ZIP to a permanent folder, for example <code>C:\Tools\ShowStack</code>.</li>
+          <li>In that folder, run:
+<pre><code>powershell -NoProfile -ExecutionPolicy Bypass -File Install.ps1</code></pre>
+          Add <code>-Startup</code> to also open ShowStack when you sign in.</li>
+          <li>Double-click <b>ShowStack</b> on your desktop.</li>
+        </ol>
+        <p class="muted small">Install.ps1 unblocks the files, puts a shortcut on your desktop, and nothing else. Settings live in <code>showstack.json</code> next to the app.</p>
+      </div>
+      <div class="card" data-platform="linux">
+        <h3>Linux</h3>
+        <div class="release"><span class="version">Latest release</span><span class="date"></span><a class="notes-link" href="https://github.com/Orangeriger1998/ShowStack/releases">Release notes</a></div>
+        <ul class="files"><li><a class="name" href="https://github.com/Orangeriger1998/ShowStack/releases">ShowStack-x.y.z-Linux.tar.gz on the Releases page</a></li></ul>
+        <p style="margin-top:16px"><b>Requirements.</b> Linux Mint 20 or later, or any desktop with Python 3.8+ and GTK 3 (<code>python3-gi</code> and <code>gir1.2-gtk-3.0</code>, which Mint ships). No root rights.</p>
+        <ol class="steps">
+          <li>Extract the archive to a permanent folder, for example <code>~/Apps/ShowStack</code>. The menu entry points at that folder.</li>
+          <li>In that folder, run:
+<pre><code>bash linux/install.sh</code></pre>
+          Add <code>--startup</code> to also open ShowStack when you sign in.</li>
+          <li>Open <b>ShowStack</b> from the menu, or double-click it on the desktop.</li>
+        </ol>
+        <p class="muted small">Settings live in <code>~/.config/showstack/showstack.json</code>, state and server logs in <code>~/.local/state/showstack</code>. Tested on Linux Mint 22 with Cinnamon.</p>
+      </div>
+    </div>
+    <p class="muted small" style="margin-top:16px">Prefer git? <code>git clone https://github.com/Orangeriger1998/ShowStack.git</code> gives you both versions, and <code>git pull</code> updates them. Your settings file is never part of the repository, so an update never overwrites it.</p>
+  </section>
+
+  <section id="platforms">
+    <h2>Windows and Linux</h2>
+    <p>Everything you see works the same on both: the tool boxes, Docker, the servers found in your code with their lights, Start, Restart and Install, folding, All or Running, the copy icon, hiding servers and opening folders. Under the hood they differ where the systems differ.</p>
+    <table>
+      <tr><th></th><th>Windows</th><th>Linux</th></tr>
+      <tr><td>Runs on</td><td>Windows PowerShell 5.1 and WPF, built into Windows</td><td>Python 3 and GTK 3 (PyGObject), shipped with Linux Mint</td></tr>
+      <tr><td>Tool catalog</td><td><code>tool-catalog.json</code>: winget ids, Program Files paths</td><td><code>linux/tool-catalog.json</code>: apt packages, Flatpak ids, <code>~/.local/bin</code>, <code>~/.cargo/bin</code> and friends</td></tr>
+      <tr><td>Installing a tool</td><td>winget or the vendor installer, in a PowerShell window</td><td><code>sudo apt install</code>, Flatpak or the vendor installer, in your terminal</td></tr>
+      <tr><td>Settings</td><td><code>showstack.json</code> next to the app</td><td><code>~/.config/showstack/showstack.json</code></td></tr>
+      <tr><td>Saved state and logs</td><td><code>%LOCALAPPDATA%\ShowStack</code></td><td><code>~/.local/state/showstack</code></td></tr>
+      <tr><td>Docker</td><td>Starts Docker Desktop</td><td>Starts the Docker service (asks for your password), rootless Docker or Docker Desktop for Linux, whichever you have</td></tr>
+      <tr><td>Folder icon</td><td>File Explorer</td><td>Your file manager: Nemo, Caja, Thunar and others</td></tr>
+      <tr><td>Second launch</td><td>Ignored</td><td>Brings the open widget to the front</td></tr>
+    </table>
+  </section>
+
+  <section id="claude">
+    <h2>Works with Claude Code</h2>
+    <p>ShowStack reads the project list Claude Code keeps and the <code>.claude/launch.json</code> file in each project, so the dev servers an AI coding assistant registered appear with their ports, marked as registered. When Claude says "restart your server", the Restart button is one click away, and the Markdown export gives the assistant the whole picture of your machine in one paste. The <a href="https://github.com/Orangeriger1998/ShowStack/wiki/Claude-Code">Claude Code page</a> in the wiki has the details.</p>
+  </section>
+
+  <section>
+    <h2>Documentation</h2>
+    <div class="links">
+      <a href="https://github.com/Orangeriger1998/ShowStack/wiki/Installation">Installation<span>Requirements, installing, updating, uninstalling</span></a>
+      <a href="https://github.com/Orangeriger1998/ShowStack/wiki/Linux">Linux<span>What differs on Linux Mint, and where things live</span></a>
+      <a href="https://github.com/Orangeriger1998/ShowStack/wiki/Using-ShowStack">Using ShowStack<span>A tour of the window: lights, buttons, groups, menus</span></a>
+      <a href="https://github.com/Orangeriger1998/ShowStack/wiki/How-Tools-Are-Found">How tools are found<span>The catalog, versions, required tools, installing</span></a>
+      <a href="https://github.com/Orangeriger1998/ShowStack/wiki/How-Servers-Are-Found">How servers are found<span>Folders scanned, files read, ports, start and restart rules</span></a>
+      <a href="https://github.com/Orangeriger1998/ShowStack/wiki/Settings">Settings<span>Every option in showstack.json</span></a>
+      <a href="https://github.com/Orangeriger1998/ShowStack/wiki/Local-AI-Models">Local AI models<span>Ollama, LM Studio and llama.cpp</span></a>
+      <a href="https://github.com/Orangeriger1998/ShowStack/wiki/Privacy-and-Safety">Privacy and safety<span>What it reads, writes, runs, stops and never touches</span></a>
+      <a href="https://github.com/Orangeriger1998/ShowStack/wiki/Troubleshooting">Troubleshooting<span>Common problems and fixes</span></a>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>ShowStack is free software under the <a href="https://github.com/Orangeriger1998/ShowStack/blob/main/LICENSE">MIT License</a>. Found a problem, or a tool that should be detected? <a href="https://github.com/Orangeriger1998/ShowStack/issues">Open an issue</a>.</p>
+    <nav>
+      <a href="https://github.com/Orangeriger1998/ShowStack">Repository</a>
+      <a href="https://github.com/Orangeriger1998/ShowStack/releases">Releases</a>
+      <a href="https://github.com/Orangeriger1998/ShowStack/wiki">Wiki</a>
+    </nav>
+  </div>
+</footer>
+<script src="site.js"></script>
+</body>
+</html>

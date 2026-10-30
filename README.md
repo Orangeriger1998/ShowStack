@@ -13,19 +13,21 @@
   <img src="assets/screenshots/main.png" width="430" alt="ShowStack showing tools, Docker and project servers">
 </p>
 
-ShowStack is a floating, always-on-top Windows widget for people who juggle many projects: the Vite app from last
+ShowStack is a floating, always-on-top widget for Windows and Linux Mint, for people who juggle many projects: the Vite app from last
 week, a FastAPI service, a docker-compose database, the servers an AI coding assistant spun up and you forgot about.
 It answers three questions at a glance:
 
-- **What do I have installed?** A box for each of 99 known developer tools it finds: languages, package managers,
+- **What do I have installed?** A box for each known developer tool it finds (99 on Windows, 105 on Linux): languages, package managers,
   Git, Docker, cloud CLIs, databases, editors, AI coding tools, local LLMs (Ollama, LM Studio, llama.cpp) and typesetting (Typst, Tectonic), with
   versions.
 - **What can I run, and is it running?** It reads your project code and lists every localhost server it can start,
   grouped by project, each with a green, yellow or red light and a **Start** or **Restart** button.
-- **Where is that code?** A folder icon on every project and server opens it in File Explorer.
+- **Where is that code?** A folder icon on every project and server opens it in File Explorer, or in your file manager on Linux.
 
 No install, no admin rights, no internet: it is plain Windows PowerShell 5.1 and WPF, which ship with Windows 10 and 11.
 On Linux Mint it is plain Python 3 and GTK 3, which Mint ships with: see **[linux/README.md](linux/README.md)**.
+
+Downloads and install steps for both systems: **[orangeriger1998.github.io/ShowStack](https://orangeriger1998.github.io/ShowStack/)**.
 
 ## Features
 
@@ -52,7 +54,7 @@ On Linux Mint it is plain Python 3 and GTK 3, which Mint ships with: see **[linu
 
 On Linux Mint, see [linux/README.md](linux/README.md) (`bash linux/install.sh`). On Windows:
 
-1. Download this repository (**Code > Download ZIP**) and extract it anywhere, or `git clone` it.
+1. Download the ZIP from the [Releases](../../releases) page (or **Code > Download ZIP**) and extract it to a permanent folder, or `git clone` the repository.
 2. Run:
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File Install.ps1

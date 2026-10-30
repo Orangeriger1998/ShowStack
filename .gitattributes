@@ -1,0 +1,4 @@
+# Left out of the release archives (git archive).
+docs/ export-ignore
+.github/ export-ignore
+.gitattributes export-ignore

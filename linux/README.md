@@ -67,7 +67,41 @@ widget does not stop them, and Restart ends the whole process tree it started.
 `~` and `$HOME`-style variables work in paths. Every other setting (`scanDepth`, `shellFolder`, `titles`, `ports`,
 `tools`) means the same as in the [Wiki](../../../wiki/Settings). To add a tool of your own, or change how one is
 found or installed, put an entry in `tools` with the same fields as `linux/tool-catalog.json`; it overrides the
-catalog entry with the same name.
+catalog entry with the same name. `localApps` does the same for the apps described next.
+
+## Local apps
+
+ShowStack finds your project servers by reading your code. Everything else that listens on this computer, it names
+by one rule, whatever holds the port:
+
+1. **Docker containers.** Every container, from `docker inspect`: the host ports it publishes, or, for a container
+   started with `--network=host`, the ports it names (`EXPOSE`, a `PORT`-style variable, the app's usual ports) that
+   are actually listening. A compose service of one of your projects stays under Servers; everything else is a Local
+   apps row with Restart, and a stopped container that serves a port gets Start.
+2. **A process you can see** whose program name or command line matches a known app (`ollama serve`, `n8n`, the
+   OpenWork engine's `opencode` sidecar).
+3. **An instance file** the app writes about itself, with its port and pid in it (OpenWork keeps one in
+   `~/.config/openwork`).
+4. **An HTTP reply.** A port held by something you cannot see (a service, root, a container) is asked `GET /` and the
+   known apps' own paths (`/api/config` for Open WebUI, `/api/health` for Grafana...). A page no signature names is
+   listed by its title. Only `localhost` is ever asked, each listening socket once.
+5. **The usual port** of a non-HTTP service held by something you cannot see is reported as "probably" that app
+   (PostgreSQL on 5432).
+
+A port your own server wanted no longer reads "in use by another program (not yours)" but, for example, "in use by
+Open WebUI (Docker container open-webui)".
+
+The known apps are data: `local-apps.json` at the top of the repository, shared with the Windows version, with the
+fields explained at the top of the file. To add one, or
+change how one is recognised, put an entry with the same fields in `localApps` in `showstack.json`:
+
+```json
+{
+  "localApps": [
+    {"name": "My dashboard", "ports": [4000], "http": [{"path": "/healthz", "match": "\"app\":\\s*\"dashboard\""}]}
+  ]
+}
+```
 
 ## Checking without the window
 

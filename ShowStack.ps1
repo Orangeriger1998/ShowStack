@@ -578,11 +578,15 @@ function Show-Status {
     $ui.Rows.Children.Clear()
     $rows = @($Status.Rows | Where-Object { $_ })
 
-    foreach ($section in 'Services', 'Servers', 'Other local servers') {
+    foreach ($section in 'Services', 'Servers', 'Local apps', 'Other local servers') {
         $sectionRows = @($rows | Where-Object Section -eq $section)
         if (-not $sectionRows.Count -and -not ($section -eq 'Servers' -and $Status.Hidden)) { continue }
         $suffix = switch ($section) {
             'Servers' { "$(@($sectionRows | Where-Object State -eq 'Green').Count) of $($sectionRows.Count) running" }
+            'Local apps' {
+                $running = @($sectionRows | Where-Object State -eq 'Green').Count
+                if ($running -eq $sectionRows.Count) { "$($sectionRows.Count)" } else { "$running of $($sectionRows.Count) running" }
+            }
             'Other local servers' { "$($sectionRows.Count)" }
             default { '' }
         }
@@ -669,6 +673,8 @@ function Show-Status {
 
     $servers = @($rows | Where-Object Section -eq 'Servers')
     $parts = @("$(@($Status.Tools | Where-Object { $_.State -ne 'Red' }).Count) tools", "$(@($servers | Where-Object State -eq 'Green').Count) of $($servers.Count) servers running")
+    $apps = @($rows | Where-Object Section -eq 'Local apps').Count
+    if ($apps) { $parts += "$apps local app$(if ($apps -ne 1) { 's' })" }
     $problems = @($rows + @($Status.Tools) | Where-Object { $_.State -eq 'Red' }).Count
     if ($problems) { $parts += "$problems need attention" }
     $ui.Summary.Text = "Checked {0:h:mm tt}  -  {1}" -f (Get-Date), ($parts -join ', ')
@@ -691,6 +697,16 @@ function Invoke-ToolAction {
 
 function Invoke-RowAction {
     param($Item)
+    if ($Item.Section -eq 'Local apps') {
+        $container = if ($Item.App) { "$($Item.App.Container)" } else { '' }
+        if ($container -and $Item.Action -eq 'Start') {
+            Invoke-Background -Body 'Start-LocalContainer -Name $arg' -Arguments @($container) -Text "Starting the Docker container $container..."
+        }
+        elseif ($container -and $Item.Action -eq 'Restart') {
+            Invoke-Background -Body 'Restart-LocalContainer -Name $arg' -Arguments @($container) -Text "Restarting the Docker container $container..."
+        }
+        return
+    }
     switch ($Item.Action) {
         'Start' {
             if ($Item.Section -eq 'Services') {

@@ -521,12 +521,15 @@ class ShowStackWindow(Gtk.ApplicationWindow):
         self.menus = []
         rows = [r for r in status['Rows'] if r]
 
-        for section in ('Services', 'Servers', 'Other local servers'):
+        for section in ('Services', 'Servers', 'Local apps', 'Other local servers'):
             section_rows = [r for r in rows if r['Section'] == section]
             if not section_rows and not (section == 'Servers' and status['Hidden']):
                 continue
             if section == 'Servers':
                 suffix = '{} of {} running'.format(sum(1 for r in section_rows if r['State'] == 'Green'), len(section_rows))
+            elif section == 'Local apps':
+                running = sum(1 for r in section_rows if r['State'] == 'Green')
+                suffix = str(len(section_rows)) if running == len(section_rows) else '{} of {} running'.format(running, len(section_rows))
             elif section == 'Other local servers':
                 suffix = str(len(section_rows))
             else:
@@ -613,6 +616,9 @@ class ShowStackWindow(Gtk.ApplicationWindow):
         servers = [r for r in rows if r['Section'] == 'Servers']
         parts = ['{} tools'.format(sum(1 for t in status['Tools'] if t['State'] != 'Red')),
                  '{} of {} servers running'.format(sum(1 for r in servers if r['State'] == 'Green'), len(servers))]
+        apps = sum(1 for r in rows if r['Section'] == 'Local apps')
+        if apps:
+            parts.append('{} local app{}'.format(apps, '' if apps == 1 else 's'))
         problems = sum(1 for r in rows + list(status['Tools']) if r['State'] == 'Red')
         if problems:
             parts.append('{} need attention'.format(problems))
@@ -712,6 +718,13 @@ class ShowStackWindow(Gtk.ApplicationWindow):
 
     def row_action(self, item):
         server = item['Server']
+        if item['Section'] == 'Local apps':
+            name = (item.get('App') or {}).get('Container')
+            if name and item['Action'] == 'Start':
+                self.run_background(lambda: engine.start_container(name), 'Starting the Docker container {}...'.format(name))
+            elif name and item['Action'] == 'Restart':
+                self.run_background(lambda: engine.restart_container(name), 'Restarting the Docker container {}...'.format(name))
+            return
         if item['Action'] == 'Start':
             if item['Section'] == 'Services':
                 self.run_background(engine.start_docker_engine, 'Starting Docker (can take up to 2 minutes)...')

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# Prints what ShowStack shows, after a fresh scan, so a change to showstack.json, tool-catalog.json or a project
-# can be checked without the window.  Usage: python3 showstack-report.py
+# Prints what ShowStack shows, after a fresh scan, so a change to showstack.json, tool-catalog.json, local-apps.json
+# or a project can be checked without the window.  Usage: python3 showstack-report.py
 import os
 import sys
 

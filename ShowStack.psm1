@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 
 $script:CatalogPath = Join-Path $PSScriptRoot 'tool-catalog.json'
 $script:ConfigPath = Join-Path $PSScriptRoot 'showstack.json'
+$script:LocalAppsPath = Join-Path $PSScriptRoot 'local-apps.json'
 $script:StatePath = Join-Path $env:LOCALAPPDATA 'ShowStack'
 $script:InventoryPath = Join-Path $script:StatePath 'inventory.json'
 $script:StartedPath = Join-Path $script:StatePath 'started.json'
@@ -21,6 +22,10 @@ $script:DockerRunPath = Join-Path $env:LOCALAPPDATA 'Docker\run'
 # (developer runtimes, plus local LLM servers: Ollama, LM Studio, llama.cpp, KoboldCpp).
 $script:DevRuntimes = 'python', 'pythonw', 'node', 'bun', 'deno', 'dotnet', 'java', 'ruby', 'php', 'uvicorn', 'hugo', 'caddy',
     'ollama', 'lm studio', 'lms', 'llama-server', 'koboldcpp'
+# Processes Docker Desktop publishes container ports through; a port they hold belongs to a container, not to them.
+$script:DockerProxyProcesses = 'com.docker.backend', 'docker-proxy', 'dockerd', 'wslrelay', 'vpnkit', 'vpnkit-bridge'
+# A listening port whose owner Windows will not show (a service, another user): still a port, still in use.
+$script:UnknownProcess = [pscustomobject]@{ ProcessId = 0; ParentProcessId = 0; Name = 'another program (not yours)'; CommandLine = '' }
 # Folders never worth descending into when looking for project code.
 $script:SkipFolders = 'node_modules', 'venv', 'env', '__pycache__', 'dist', 'build', 'bin', 'obj', 'target', 'out',
     'coverage', 'site-packages', 'vendor', 'packages', 'tests', 'test', '__tests__', 'logs', 'tmp', 'temp'
@@ -47,6 +52,7 @@ function Get-DefaultConfig {
         shellFolder           = '%USERPROFILE%'
         titles                = @{}
         ports                 = @{}
+        localApps             = @()
     }
 }
 
@@ -84,6 +90,7 @@ function Get-WidgetConfig {
         ShellFolder           = [Environment]::ExpandEnvironmentVariables([string](& $value 'shellFolder'))
         Titles                = $titles
         Ports                 = $ports
+        LocalApps             = @(& $value 'localApps')
     }
 }
 
@@ -192,6 +199,16 @@ function Read-SmallText {
     try { return [IO.File]::ReadAllText($item.FullName) } catch { return $null }
 }
 
+function Get-VersionFrom {
+    # A version read from where a tool sits (foo-1.2.3\foo.exe) or from a VERSION file it ships, for tools with no
+    # version command and no file version.
+    param([string]$Path, [string]$Source)
+    $text = if ($Source -eq 'file') { "$(Read-SmallText -Path $Path -MaxBytes 4096)" } else { "$Path" }
+    $match = [regex]::Match($text, '\d+\.\d+(\.\d+)*')
+    if ($match.Success) { return $match.Value }
+    return ''
+}
+
 # ----------------------------------------------------------------------------------------------------------------- tools
 
 function Get-PathIndex {
@@ -273,6 +290,10 @@ function Get-ToolInventory {
         $state = 'Green'; $version = ''; $detail = ''
         if (-not $entry.Path) {
             $state = 'Red'; $detail = 'Required, but not installed'
+        }
+        elseif ($tool.versionFrom -in 'path', 'file') {
+            $version = Get-VersionFrom -Path $entry.Path -Source $tool.versionFrom
+            $detail = if ($version) { "Version $version" } else { 'Installed' }
         }
         elseif (-not $tool.versionArgs) {
             $version = (Get-Item -LiteralPath $entry.Path).VersionInfo.ProductVersion
@@ -714,18 +735,24 @@ function Get-DevInventory {
 
 function New-StatusItem {
     param([string]$Section, [string]$Group = '', [string]$Name, [ValidateSet('Green', 'Yellow', 'Red')] [string]$State,
-        [string]$Detail = '', [string]$Action = '', [string]$Url = '', $Server = $null)
-    [pscustomobject]@{ Section = $Section; Group = $Group; Name = $Name; State = $State; Detail = $Detail; Action = $Action; Url = $Url; Server = $Server }
+        [string]$Detail = '', [string]$Action = '', [string]$Url = '', $Server = $null, $App = $null)
+    [pscustomobject]@{ Section = $Section; Group = $Group; Name = $Name; State = $State; Detail = $Detail; Action = $Action; Url = $Url; Server = $Server; App = $App }
 }
 
 function Get-ProcessSnapshot {
     $processes = @{}
     Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, Name, CommandLine | ForEach-Object { $processes[[int]$_.ProcessId] = $_ }
     $ports = @{}
+    $sockets = @{}
     Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
         Where-Object { $_.LocalAddress -in '127.0.0.1', '0.0.0.0', '::', '::1' } |
-        ForEach-Object { if (-not $ports.ContainsKey([int]$_.LocalPort) -and $processes.ContainsKey([int]$_.OwningProcess)) { $ports[[int]$_.LocalPort] = $processes[[int]$_.OwningProcess] } }
-    [pscustomobject]@{ Processes = $processes; Ports = $ports }
+        ForEach-Object {
+            $port = [int]$_.LocalPort
+            if ($ports.ContainsKey($port) -and $ports[$port].ProcessId) { return }
+            $ports[$port] = if ($processes.ContainsKey([int]$_.OwningProcess)) { $processes[[int]$_.OwningProcess] } else { $script:UnknownProcess }
+            $sockets[$port] = "$($_.OwningProcess)"
+        }
+    [pscustomobject]@{ Processes = $processes; Ports = $ports; Sockets = $sockets }
 }
 
 function Get-AncestorIds {
@@ -740,19 +767,87 @@ function Get-AncestorIds {
     return $ids
 }
 
+function Get-DockerPath {
+    return (Get-Command docker -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+}
+
 function Get-DockerState {
-    $docker = (Get-Command docker -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
-    if (-not $docker) { return [pscustomobject]@{ Path = $null; Running = $false; Version = ''; Containers = @{} } }
+    $docker = Get-DockerPath
+    if (-not $docker) { return [pscustomobject]@{ Path = $null; Running = $false; Version = ''; Containers = @{}; List = @() } }
     $version = Invoke-Captured -Path $docker -Arguments 'version', '--format', '{{.Server.Version}}' -TimeoutSeconds 8
     $containers = @{}
+    $list = @()
     if ($version.ExitCode -eq 0) {
-        foreach ($line in (Invoke-Captured -Path $docker -Arguments 'ps', '--format', '{{.Labels}}' -TimeoutSeconds 8).Output) {
-            $dir = [regex]::Match($line, 'com\.docker\.compose\.project\.working_dir=([^,]+)').Groups[1].Value
-            $service = [regex]::Match($line, 'com\.docker\.compose\.service=([^,]+)').Groups[1].Value
-            if ($dir -and $service) { $containers["$(Get-PathKey $dir)|$($service.ToLowerInvariant())"] = $true }
+        $list = @(Get-DockerContainers -Docker $docker)
+        foreach ($container in $list) {
+            if ($container.Running -and $container.ComposeDir -and $container.ComposeService) {
+                $containers["$(Get-PathKey $container.ComposeDir)|$($container.ComposeService.ToLowerInvariant())"] = $true
+            }
         }
     }
-    [pscustomobject]@{ Path = $docker; Running = ($version.ExitCode -eq 0); Version = "$($version.Output | Select-Object -First 1)"; Containers = $containers }
+    [pscustomobject]@{ Path = $docker; Running = ($version.ExitCode -eq 0); Version = "$($version.Output | Select-Object -First 1)"; Containers = $containers; List = $list }
+}
+
+$script:ContainerPortVariables = 'PORT', 'HTTP_PORT', 'HTTPS_PORT', 'WEB_PORT', 'WEBUI_PORT', 'UI_PORT', 'LISTEN_PORT', 'SERVER_PORT', 'APP_PORT', 'API_PORT'
+
+function Get-DockerContainers {
+    # Every container, running or not: its name and image, the host ports it publishes, the ports it says it serves
+    # (EXPOSE and a PORT-style variable; what a --network=host container listens on), and its compose labels.
+    param([Parameter(Mandatory)] [string]$Docker)
+
+    $ids = @((Invoke-Captured -Path $Docker -Arguments 'ps', '-aq' -TimeoutSeconds 8).Output | Where-Object { $_ -match '^[0-9a-f]{6,}$' })
+    if (-not $ids.Count) { return @() }
+    $inspected = @()
+    try {
+        $handle = Start-CapturedProcess -Path $Docker -Arguments (@('inspect') + $ids)
+        $result = Wait-CapturedProcess -Handle $handle -TimeoutMilliseconds 15000
+        if (-not $result.TimedOut -and $result.ExitCode -eq 0) { $inspected = @(("$($handle.Out.Result)" | ConvertFrom-Json) | ForEach-Object { $_ }) }
+    }
+    catch { $inspected = @() }
+
+    foreach ($data in $inspected) {
+        if (-not $data) { continue }
+        $config = $data.Config
+        $state = $data.State
+        $hostConfig = $data.HostConfig
+        $env_ = @{}
+        foreach ($item in @($config.Env)) {
+            $parts = "$item".Split('=', 2)
+            if ($parts.Count -eq 2) { $env_[$parts[0]] = $parts[1] }
+        }
+        $published = @{}
+        if ($data.NetworkSettings -and $data.NetworkSettings.Ports) {
+            foreach ($property in $data.NetworkSettings.Ports.PSObject.Properties) {
+                foreach ($binding in @($property.Value)) {
+                    if ($binding -and "$($binding.HostPort)" -match '^\d+$') { $published[[int]$binding.HostPort] = $true }
+                }
+            }
+        }
+        $exposed = @{}
+        $exposedKeys = @()
+        if ($config.ExposedPorts) { $exposedKeys += @($config.ExposedPorts.PSObject.Properties.Name) }
+        if ($hostConfig -and $hostConfig.PortBindings) { $exposedKeys += @($hostConfig.PortBindings.PSObject.Properties.Name) }
+        foreach ($key in $exposedKeys) {
+            $match = [regex]::Match("$key", '^(\d+)')
+            if ($match.Success) { $exposed[[int]$match.Groups[1].Value] = $true }
+        }
+        foreach ($key in $script:ContainerPortVariables) {
+            if ("$($env_[$key])" -match '^\d+$') { $exposed[[int]$env_[$key]] = $true }
+        }
+        $labels = if ($config.Labels) { $config.Labels } else { [pscustomobject]@{} }
+        [pscustomobject]@{
+            Id             = "$($data.Id)".Substring(0, [Math]::Min(12, "$($data.Id)".Length))
+            Name           = "$($data.Name)".TrimStart('/')
+            Image          = "$($config.Image)"
+            Running        = [bool]$state.Running
+            Status         = "$($state.Status)"
+            HostNetwork    = ("$($hostConfig.NetworkMode)" -eq 'host')
+            Published      = @($published.Keys | Sort-Object)
+            Exposed        = @($exposed.Keys | Where-Object { $_ -gt 0 -and $_ -lt 65536 } | Sort-Object)
+            ComposeDir     = "$($labels.'com.docker.compose.project.working_dir')"
+            ComposeService = "$($labels.'com.docker.compose.service')"
+        }
+    }
 }
 
 function Get-DockerStatusItem {
@@ -808,14 +903,14 @@ function Test-ServerDependencies {
 }
 
 function Get-ServerStatusItems {
-    param([object[]]$Servers, $Snapshot, $Docker, [hashtable]$Hidden)
+    param([object[]]$Servers, $Snapshot, $Docker, [hashtable]$Hidden, $Apps = $null, [hashtable]$Owned = @{})
 
     $started = Get-StartedRecord
     $visible = @($Servers | Where-Object { $_ -and -not $Hidden.ContainsKey($_.Key) })
     $claims = @{}
     foreach ($server in $visible) { $claims[[int]$server.Port] = 1 + [int]$claims[[int]$server.Port] }
 
-    $owned = @{}
+    $owned = $Owned
     foreach ($server in $visible) {
         $item = @{ Section = 'Servers'; Group = $server.Project; Name = $server.Label; Url = "http://localhost:$($server.Port)"; Server = $server }
         $where = "port $($server.Port) - $($server.Source)"
@@ -827,7 +922,7 @@ function Get-ServerStatusItems {
                 $owned[[int]$server.Port] = $true
                 New-StatusItem @item -State 'Green' -Detail "Running - $where" -Action 'Restart'
             }
-            elseif ($owner) { New-StatusItem @item -State 'Yellow' -Detail "Port $($server.Port) is in use by $($owner.Name) - $($server.Source)" }
+            elseif ($owner) { New-StatusItem @item -State 'Yellow' -Detail "Port $($server.Port) is in use by $(Get-PortHolder -Port $server.Port -Owner $owner -Apps $Apps) - $($server.Source)" }
             else { New-StatusItem @item -State 'Yellow' -Detail "Stopped - $where" -Action 'Start' }
             continue
         }
@@ -846,20 +941,425 @@ function Get-ServerStatusItems {
             'Likely' { $owned[[int]$server.Port] = $true; New-StatusItem @item -State 'Green' -Detail "Running (PID $($owner.ProcessId), probably this one) - $where" -Action 'Restart' }
             default {
                 $state = if ($server.Registered) { 'Red' } else { 'Yellow' }
-                New-StatusItem @item -State $state -Detail "Port $($server.Port) is in use by $($owner.Name) (PID $($owner.ProcessId)) - $($server.Source)"
+                New-StatusItem @item -State $state -Detail "Port $($server.Port) is in use by $(Get-PortHolder -Port $server.Port -Owner $owner -Apps $Apps) - $($server.Source)"
             }
         }
     }
 
+}
+
+function Get-PortHolder {
+    # Who holds a port one of your servers wanted: the local app found on it, else the process, else 'another program'.
+    param([int]$Port, $Owner, $Apps)
+    if ($Apps -and $Apps.Ports.ContainsKey($Port)) { return "$($Apps.Ports[$Port].Name) ($($Apps.Ports[$Port].Short))" }
+    if ($Owner.ProcessId) { return "$($Owner.Name) (PID $($Owner.ProcessId))" }
+    return "$($Owner.Name)"
+}
+
+function Get-OtherServerItems {
+    # Developer runtimes you can see listening on ports that no project server and no local app explains.
+    param($Snapshot, [hashtable]$Owned, $Apps = $null)
     foreach ($port in ($Snapshot.Ports.Keys | Sort-Object)) {
-        if ($owned.ContainsKey($port)) { continue }
+        if ($Owned.ContainsKey($port) -or ($Apps -and $Apps.Ports.ContainsKey([int]$port))) { continue }
         $owner = $Snapshot.Ports[$port]
+        if (-not $owner.ProcessId) { continue }
         $runtime = [IO.Path]::GetFileNameWithoutExtension("$($owner.Name)")
         if ($runtime -notin $script:DevRuntimes) { continue }
         $commandLine = "$($owner.CommandLine)" -replace '\s+', ' '
         $what = if ($commandLine -match '\\AppData\\Local\\Temp\\claude\\') { 'Claude test copy' } else { $runtime }
         New-StatusItem -Section 'Other local servers' -Name "Port $port" -State 'Green' -Detail "$what (PID $($owner.ProcessId)): $commandLine" -Url "http://localhost:$port"
     }
+}
+
+# ----------------------------------------------------------------------------------------------------------- local apps
+# One rule for everything else that listens on this computer. A port none of your project servers owns is attributed
+# the same way whatever holds it: a Docker container (its published ports, or with --network=host the ports its
+# environment and image name), a process that is a known program, a port that answers HTTP the way a known app does,
+# or a port an app wrote into its own instance file. The known apps are data (local-apps.json, shared with the Linux
+# version, plus localApps in showstack.json), so teaching ShowStack a new one is a line there, not code here.
+
+$script:SystemPortLimit = 1024          # below this live system services; containers publishing there are still seen
+$script:ProbeTimeoutMilliseconds = 800  # how long to wait for one HTTP reply from localhost
+$script:ProbeLimit = 40                 # ports asked over HTTP in one check
+$script:ProbeRetrySeconds = 60          # before a port that did not answer is asked again
+$script:ProbeCache = @{}
+$script:LocalAppRecordId = 0
+
+function Get-LocalAppCatalog {
+    param($Config)
+    $apps = @()
+    try { $apps = @((Get-Content -Raw -LiteralPath $script:LocalAppsPath | ConvertFrom-Json).apps) } catch { $apps = @() }
+    $merged = [ordered]@{}
+    foreach ($app in @($apps) + @($Config.LocalApps)) {
+        if ($app -and $app.name) { $merged[([string]$app.name).ToLowerInvariant()] = $app }   # settings entries override the catalog
+    }
+    return @($merged.Values)
+}
+
+function Get-AppPorts {
+    param($App)
+    return @(@($App.ports) | Where-Object { "$_" -match '^\d+$' } | ForEach-Object { [int]$_ })
+}
+
+function Test-AppIsWeb {
+    param($App)
+    if (-not $App) { return $true }
+    $protocol = if ($App.protocol) { [string]$App.protocol } else { 'http' }
+    return ($protocol -eq 'http')
+}
+
+function New-LocalHttpRequest {
+    # A GET for http://localhost:port/path with short timeouts, no proxy and no redirects. Localhost only.
+    param([int]$Port, [string]$Path = '/')
+    $request = [Net.HttpWebRequest]::Create("http://localhost:$Port$Path")
+    $request.Method = 'GET'
+    $request.Timeout = $script:ProbeTimeoutMilliseconds
+    $request.ReadWriteTimeout = $script:ProbeTimeoutMilliseconds
+    $request.UserAgent = 'ShowStack'
+    $request.Accept = 'application/json, text/html;q=0.9, */*;q=0.5'
+    $request.AllowAutoRedirect = $false
+    $request.KeepAlive = $false
+    $request.Proxy = $null
+    return $request
+}
+
+function Get-WebExceptionResponse {
+    # The reply inside a failed request (a 404 still shows the port speaks HTTP), or $null when there was none.
+    param($Exception)
+    while ($Exception -and $Exception -isnot [Net.WebException]) { $Exception = $Exception.InnerException }
+    if ($Exception -and $Exception.Response) { return $Exception.Response }
+    return $null
+}
+
+function Read-LocalHttpResponse {
+    # Status, headers and the first 64 KB of a reply, or $null when there is none to read.
+    param($Response)
+    if (-not $Response) { return $null }
+    try {
+        $reader = New-Object IO.StreamReader($Response.GetResponseStream(), [Text.Encoding]::UTF8)
+        $buffer = New-Object char[] 65536
+        $count = $reader.Read($buffer, 0, $buffer.Length)
+        $body = if ($count -gt 0) { New-Object string($buffer, 0, $count) } else { '' }
+        $headers = @{}
+        foreach ($name in @($Response.Headers.AllKeys)) { $headers[$name.ToLowerInvariant()] = "$($Response.Headers[$name])" }
+        return [pscustomobject]@{ Status = [int]$Response.StatusCode; Headers = $headers; Body = $body }
+    }
+    catch { return $null }
+    finally { $Response.Close() }
+}
+
+function Test-ProbeRemembered {
+    # Whether the cache already answers for a port, socket and path: an answer is kept for as long as the socket
+    # lives, a silence for ProbeRetrySeconds.
+    param([string]$Key)
+    if (-not $script:ProbeCache.ContainsKey($Key)) { return $false }
+    $cached = $script:ProbeCache[$Key]
+    return ($null -ne $cached.Result -or ([DateTime]::UtcNow - $cached.When).TotalSeconds -lt $script:ProbeRetrySeconds)
+}
+
+function Set-ProbeRemembered {
+    param([string]$Key, $Result)
+    if ($script:ProbeCache.Count -gt 4000) { $script:ProbeCache.Clear() }
+    $script:ProbeCache[$Key] = [pscustomobject]@{ When = [DateTime]::UtcNow; Result = $Result }
+}
+
+function Invoke-LocalHttpGet {
+    # Status, headers and the first 64 KB of http://localhost:port/path, or $null when the port does not speak HTTP.
+    # Remembered per listening socket, so an app is asked once, not at every check. Localhost only, never a proxy.
+    param([int]$Port, [string]$Path = '/', [string]$SocketKey = '')
+
+    $key = "$Port|$SocketKey|$Path"
+    if (Test-ProbeRemembered -Key $key) { return $script:ProbeCache[$key].Result }
+    $result = $null
+    try {
+        $request = New-LocalHttpRequest -Port $Port -Path $Path
+        $response = $null
+        try { $response = $request.GetResponse() }
+        catch { $response = Get-WebExceptionResponse -Exception $_.Exception }
+        $result = Read-LocalHttpResponse -Response $response
+    }
+    catch { $result = $null }
+    Set-ProbeRemembered -Key $key -Result $result
+    return $result
+}
+
+function Invoke-LocalHttpProbes {
+    # Asks several ports for / at the same time and waits once for all of them (the Linux engine uses a thread pool
+    # for the same reason), so forty silent ports cost one timeout, not forty. The replies land in the cache that
+    # Invoke-LocalHttpGet reads; a request still unanswered at the deadline is dropped and remembered as silence.
+    param([int[]]$Ports, [hashtable]$SocketKeys)
+
+    $pending = [Collections.Generic.List[object]]::new()
+    foreach ($port in $Ports) {
+        $key = "$port|$($SocketKeys[[int]$port])|/"
+        if (Test-ProbeRemembered -Key $key) { continue }
+        try {
+            $request = New-LocalHttpRequest -Port $port -Path '/'
+            $pending.Add([pscustomobject]@{ Key = $key; Request = $request; Task = $request.GetResponseAsync() })
+        }
+        catch { Set-ProbeRemembered -Key $key -Result $null }
+    }
+    if (-not $pending.Count) { return }
+    $tasks = [Threading.Tasks.Task[]]@($pending | ForEach-Object { $_.Task })
+    try { [void][Threading.Tasks.Task]::WaitAll($tasks, $script:ProbeTimeoutMilliseconds) } catch { }
+    foreach ($entry in $pending) {
+        $result = $null
+        if ($entry.Task.IsCompleted) {
+            try {
+                $response = if ($entry.Task.Status -eq 'RanToCompletion') { $entry.Task.Result } else { Get-WebExceptionResponse -Exception $entry.Task.Exception }
+                $result = Read-LocalHttpResponse -Response $response
+            }
+            catch { $result = $null }
+        }
+        else {
+            try { $entry.Request.Abort() } catch { }
+        }
+        Set-ProbeRemembered -Key $entry.Key -Result $result
+    }
+}
+
+function Test-AppProcess {
+    param($App, $Owner)
+    if (-not $Owner -or -not $Owner.ProcessId) { return $false }
+    $runtime = [IO.Path]::GetFileNameWithoutExtension("$($Owner.Name)").ToLowerInvariant()
+    try {
+        if ($App.process -and [regex]::IsMatch($runtime, [string]$App.process, 'IgnoreCase')) { return $true }
+        if ($App.cmdline -and [regex]::IsMatch("$($Owner.CommandLine)", [string]$App.cmdline, 'IgnoreCase')) { return $true }
+    }
+    catch { }
+    return $false
+}
+
+function Test-AppImage {
+    param($App, [string]$Image)
+    if (-not $App.image -or -not $Image) { return $false }
+    try { return [regex]::IsMatch($Image, [string]$App.image, 'IgnoreCase') } catch { return $false }
+}
+
+function Test-AppHttp {
+    param($App, [int]$Port, [string]$SocketKey)
+    foreach ($probe in @($App.http)) {
+        if (-not $probe) { continue }
+        $path = if ($probe.path) { [string]$probe.path } else { '/' }
+        $response = Invoke-LocalHttpGet -Port $Port -Path $path -SocketKey $SocketKey
+        if ($null -eq $response) { continue }
+        $headerText = @($response.Headers.Keys | ForEach-Object { '{0}: {1}' -f $_, $response.Headers[$_] }) -join "`n"
+        $text = "$($response.Body)`n$headerText"
+        $pattern = if ($probe.match) { [string]$probe.match } else { '.' }
+        try { if ([regex]::IsMatch($text, $pattern, 'IgnoreCase, Singleline')) { return $true } } catch { }
+    }
+    return $false
+}
+
+function Get-InstanceFilePorts {
+    # Port -> @{ Pid; File } from the JSON files an app writes about itself (one path or a list, the Linux ones simply
+    # not existing here): every number under a key ending in 'port', with the nearest 'pid' beside it.
+    param($App)
+    $found = @{}
+    foreach ($candidate in @($App.instanceFile)) {
+        if (-not $candidate) { continue }
+        $path = [Environment]::ExpandEnvironmentVariables(("$candidate" -replace '^~', $env:USERPROFILE))   # Windows takes / as well as \
+        $text = Read-SmallText -Path $path -MaxBytes 1048576
+        if (-not $text) { continue }
+        try { $data = $text | ConvertFrom-Json } catch { continue }
+        Add-InstancePorts -Node $data -RecordedPid 0 -File "$candidate" -Found $found
+    }
+    return $found
+}
+
+function Add-InstancePorts {
+    param($Node, [int]$RecordedPid, [string]$File, [hashtable]$Found)
+    if ($null -eq $Node) { return }
+    if ($Node -is [Array]) {
+        foreach ($item in $Node) { Add-InstancePorts -Node $item -RecordedPid $RecordedPid -File $File -Found $Found }
+        return
+    }
+    if ($Node -isnot [Management.Automation.PSCustomObject]) { return }
+    if ($Node.pid -is [int] -or $Node.pid -is [long]) { $RecordedPid = [int]$Node.pid }
+    foreach ($property in $Node.PSObject.Properties) {
+        $value = $property.Value
+        if ($property.Name.ToLowerInvariant().EndsWith('port') -and ($value -is [int] -or $value -is [long]) -and $value -gt 0 -and $value -lt 65536) {
+            $Found[[int]$value] = @{ Pid = $RecordedPid; File = $File }
+        }
+        else { Add-InstancePorts -Node $value -RecordedPid $RecordedPid -File $File -Found $Found }
+    }
+}
+
+function Get-PageTitle {
+    # What a web page calls itself, for a web app no signature names.
+    param($Response)
+    $match = [regex]::Match("$($Response.Body)", '<title[^>]*>\s*([^<]{1,80}?)\s*</title>', 'IgnoreCase, Singleline')
+    if ($match.Success) { return ($match.Groups[1].Value -replace '\s+', ' ') }
+    $server = "$($Response.Headers['server'])"
+    if ($server) { return $server.Split('/')[0].Trim() }
+    return ''
+}
+
+function New-LocalAppRecord {
+    param([string]$Name, [string]$How, [string]$Short, [int]$Port = 0, [bool]$Web = $true, [string]$Action = '',
+        [string]$Container = '', [string]$State = 'Green', [int]$ProcessId = 0)
+    $script:LocalAppRecordId++
+    $record = [pscustomobject]@{ Id = $script:LocalAppRecordId; Name = $Name; How = $How; Short = $Short; Ports = [Collections.Generic.List[int]]::new()
+        Web = $Web; Action = $Action; Container = $Container; State = $State; Pid = $ProcessId }
+    if ($Port) { $record.Ports.Add($Port) }
+    return $record
+}
+
+function Find-LocalApps {
+    # Everything listening here that is not one of your project servers, attributed. Returns Ports (port -> app) and
+    # Others (apps with no port of their own: containers publishing none, stopped containers). An app record: Name,
+    # How (the full story for the row), Short (for 'port in use by'), Ports, Web, Action, Container, State, Pid.
+    param($Snapshot, $Docker, $Config, [object[]]$Servers = @())
+
+    $catalog = @(Get-LocalAppCatalog -Config $Config)
+    $ports = $Snapshot.Ports
+    $sockets = if ($Snapshot.Sockets) { $Snapshot.Sockets } else { @{} }
+    $projectCompose = @{}
+    foreach ($server in @($Servers | Where-Object { $_ -and $_.Kind -eq 'compose' })) {
+        $projectCompose["$(Get-PathKey $server.Dir)|$(([string]$server.Service).ToLowerInvariant())"] = $true
+    }
+    $found = @{}
+    $others = [Collections.Generic.List[object]]::new()
+    $runtimeOf = { param($owner) [IO.Path]::GetFileNameWithoutExtension("$($owner.Name)").ToLowerInvariant() }
+
+    # 1. Docker containers: the ports they publish, or with host networking the ports they name that are listening
+    #    and held by nothing you can see (or by Docker itself).
+    $dockerHeld = @{}
+    foreach ($port in @($ports.Keys)) {
+        $owner = $ports[$port]
+        if (-not $owner.ProcessId -or ((& $runtimeOf $owner) -in $script:DockerProxyProcesses)) { $dockerHeld[[int]$port] = $true }
+    }
+    foreach ($container in @($Docker.List)) {
+        if ($projectCompose.ContainsKey("$(Get-PathKey $container.ComposeDir)|$($container.ComposeService.ToLowerInvariant())")) { continue }
+        $app = $catalog | Where-Object { Test-AppImage -App $_ -Image $container.Image } | Select-Object -First 1
+        $name = if ($app) { [string]$app.name } else { $container.Name }
+        $short = "Docker container $($container.Name)"
+        $how = "$short, image $($container.Image)"
+        if (-not $container.Running) {
+            if (@($container.Exposed).Count -or @($container.Published).Count) {
+                $others.Add((New-LocalAppRecord -Name $name -How "Stopped; Start runs docker start $($container.Name) - $how" -Short $short -Web $false -Action 'Start' -Container $container.Name -State 'Yellow'))
+            }
+            continue
+        }
+        if ($container.HostNetwork) {
+            $wanted = @($container.Exposed) + @(if ($app) { Get-AppPorts -App $app })
+            $containerPorts = @($wanted | Sort-Object -Unique | Where-Object { $dockerHeld.ContainsKey([int]$_) })
+            $how += ', host network'
+        }
+        else { $containerPorts = @($container.Published) }
+        if (-not $containerPorts.Count) {
+            $note = if ($container.HostNetwork) { ', port not known' } else { ', no port published to this computer' }
+            $others.Add((New-LocalAppRecord -Name $name -How ($how + $note) -Short $short -Web $false -Action 'Restart' -Container $container.Name))
+            continue
+        }
+        $record = New-LocalAppRecord -Name $name -How $how -Short $short -Web (Test-AppIsWeb -App $app) -Action 'Restart' -Container $container.Name
+        foreach ($port in $containerPorts) {
+            if (-not $found.ContainsKey([int]$port)) { $found[[int]$port] = $record; $record.Ports.Add([int]$port) }
+        }
+    }
+
+    # 2. Processes you can see that are a known program (ollama serve, n8n, the OpenWork engine...).
+    foreach ($port in @($ports.Keys | Sort-Object)) {
+        $owner = $ports[$port]
+        if ($found.ContainsKey([int]$port) -or -not $owner.ProcessId) { continue }
+        $app = $catalog | Where-Object { Test-AppProcess -App $_ -Owner $owner } | Select-Object -First 1
+        if ($app) {
+            $found[[int]$port] = New-LocalAppRecord -Name ([string]$app.name) -How "$(& $runtimeOf $owner) (PID $($owner.ProcessId))" -Short "PID $($owner.ProcessId)" -Port $port -Web (Test-AppIsWeb -App $app) -ProcessId $owner.ProcessId
+        }
+    }
+
+    # 3. Ports an app recorded in its own instance file.
+    foreach ($app in $catalog) {
+        $instances = Get-InstanceFilePorts -App $app
+        foreach ($port in @($instances.Keys)) {
+            $recordedPid = [int]$instances[$port].Pid
+            if ($found.ContainsKey([int]$port) -or -not $ports.ContainsKey([int]$port)) { continue }
+            if ($recordedPid -and -not (Get-Process -Id $recordedPid -ErrorAction SilentlyContinue)) { continue }
+            $pidNote = if ($recordedPid) { " (PID $recordedPid)" } else { '' }
+            $found[[int]$port] = New-LocalAppRecord -Name ([string]$app.name) -How "Recorded in $($instances[$port].File)$pidNote" -Short "from $([IO.Path]::GetFileName($instances[$port].File))" -Port $port -Web (Test-AppIsWeb -App $app) -ProcessId $recordedPid
+        }
+    }
+
+    # 4. Ports held by something you cannot see (a service, a container), or by a program that is not a developer
+    #    runtime: ask them over HTTP, known apps first, then whatever the page calls itself.
+    $candidates = @($ports.Keys | Sort-Object | Where-Object {
+        $owner = $ports[$_]
+        (-not $found.ContainsKey([int]$_)) -and ([int]$_ -ge $script:SystemPortLimit) -and ((-not $owner.ProcessId) -or ((& $runtimeOf $owner) -notin $script:DevRuntimes))
+    } | Select-Object -First $script:ProbeLimit)
+    Invoke-LocalHttpProbes -Ports @($candidates | ForEach-Object { [int]$_ }) -SocketKeys $sockets
+    foreach ($port in $candidates) {
+        $socketKey = "$($sockets[[int]$port])"
+        $root = Invoke-LocalHttpGet -Port $port -Path '/' -SocketKey $socketKey
+        if ($null -eq $root) { continue }
+        $usual = @($catalog | Where-Object { $_.http -and ([int]$port -in (Get-AppPorts -App $_)) })
+        $rest = @($catalog | Where-Object { $_.http -and ([int]$port -notin (Get-AppPorts -App $_)) })
+        $app = $null
+        foreach ($candidate in @($usual + $rest)) {
+            if (Test-AppHttp -App $candidate -Port $port -SocketKey $socketKey) { $app = $candidate; break }
+        }
+        $owner = $ports[$port]
+        if ($owner.ProcessId) { $who = "$(& $runtimeOf $owner) (PID $($owner.ProcessId))"; $short = "PID $($owner.ProcessId)" }
+        else { $who = 'held by a program you cannot see (a service or a container)'; $short = 'not your process' }
+        if ($app) {
+            $found[[int]$port] = New-LocalAppRecord -Name ([string]$app.name) -How "Answers like $($app.name); $who" -Short $short -Port $port -ProcessId $owner.ProcessId
+        }
+        else {
+            $title = Get-PageTitle -Response $root
+            if (-not $title) { $title = "Web app on port $port" }
+            $found[[int]$port] = New-LocalAppRecord -Name $title -How "A web app no signature names; $who" -Short $short -Port $port -ProcessId $owner.ProcessId
+        }
+    }
+
+    # 5. A tcp app on its usual port, held by a program you cannot see, is probably that app (PostgreSQL on 5432).
+    foreach ($port in @($ports.Keys | Sort-Object)) {
+        $owner = $ports[$port]
+        if ($found.ContainsKey([int]$port) -or $owner.ProcessId -or [int]$port -lt $script:SystemPortLimit) { continue }
+        $app = $catalog | Where-Object { -not (Test-AppIsWeb -App $_) -and ([int]$port -in (Get-AppPorts -App $_)) } | Select-Object -First 1
+        if ($app) {
+            $found[[int]$port] = New-LocalAppRecord -Name ([string]$app.name) -How "Probably: $port is its usual port, held by a program you cannot see" -Short 'probably, by its port' -Port $port -Web $false
+        }
+    }
+    [pscustomobject]@{ Ports = $found; Others = @($others) }
+}
+
+function Get-LocalAppItems {
+    param($Apps, [hashtable]$Owned)
+    $seen = @{}
+    foreach ($port in @($Apps.Ports.Keys | Sort-Object)) {
+        $app = $Apps.Ports[$port]
+        if ($Owned.ContainsKey([int]$port) -or $seen.ContainsKey($app.Id)) { continue }
+        $seen[$app.Id] = $true
+        $itsPorts = @($app.Ports | Where-Object { -not $Owned.ContainsKey([int]$_) })
+        if (-not $itsPorts.Count) { $itsPorts = @([int]$port) }
+        $plural = if ($itsPorts.Count -gt 1) { 's' } else { '' }
+        $url = if ($app.Web) { "http://localhost:$($itsPorts[0])" } else { '' }
+        New-StatusItem -Section 'Local apps' -Name $app.Name -State $app.State -Detail "$($app.How) - port$plural $($itsPorts -join ', ')" -Action $app.Action -Url $url -App $app
+    }
+    foreach ($app in @($Apps.Others)) {
+        New-StatusItem -Section 'Local apps' -Name $app.Name -State $app.State -Detail $app.How -Action $app.Action -App $app
+    }
+}
+
+function Invoke-ContainerCommand {
+    param([string]$Verb, [string]$Name)
+    $docker = Get-DockerPath
+    if (-not $docker) { throw 'Docker is not installed.' }
+    $result = Invoke-Captured -Path $docker -Arguments $Verb, $Name -TimeoutSeconds 120
+    if ($result.TimedOut -or $result.ExitCode -ne 0) {
+        $why = if ($result.Output) { $result.Output -join ' ' } else { 'failed' }
+        throw "docker $Verb ${Name}: $why"
+    }
+    $script:ProbeCache.Clear()
+}
+
+function Start-LocalContainer {
+    param([Parameter(Mandatory)] [string]$Name)
+    Invoke-ContainerCommand -Verb 'start' -Name $Name
+}
+
+function Restart-LocalContainer {
+    param([Parameter(Mandatory)] [string]$Name)
+    Invoke-ContainerCommand -Verb 'restart' -Name $Name
 }
 
 function Get-HiddenServers {
@@ -878,9 +1378,13 @@ function Get-DevStatus {
     $hidden = Get-HiddenServers
     $snapshot = Get-ProcessSnapshot
     $docker = Get-DockerState
+    $apps = Find-LocalApps -Snapshot $snapshot -Docker $docker -Config (Get-WidgetConfig) -Servers @($Inventory.Servers)
+    $owned = @{}
     $rows = @(
         Get-DockerStatusItem -Docker $docker
-        Get-ServerStatusItems -Servers @($Inventory.Servers) -Snapshot $snapshot -Docker $docker -Hidden $hidden
+        Get-ServerStatusItems -Servers @($Inventory.Servers) -Snapshot $snapshot -Docker $docker -Hidden $hidden -Apps $apps -Owned $owned
+        Get-LocalAppItems -Apps $apps -Owned $owned
+        Get-OtherServerItems -Snapshot $snapshot -Owned $owned -Apps $apps
     )
     [pscustomobject]@{
         Tools     = @($Inventory.Tools)
@@ -926,7 +1430,8 @@ function Start-DevServer {
     if ($owner) {
         $claims = @{ ([int]$Server.Port) = 1 }
         if ((Get-ServerOwnership -Server $Server -Owner $owner -Snapshot $snapshot -Started $started -Claims $claims) -eq 'No') {
-            throw "Port $($Server.Port) is in use by $($owner.Name) (PID $($owner.ProcessId)), which is not $label. Not touching it."
+            $holder = if ($owner.ProcessId) { "$($owner.Name) (PID $($owner.ProcessId))" } else { $owner.Name }
+            throw "Port $($Server.Port) is in use by $holder, which is not $label. Not touching it."
         }
         Stop-ProcessTree -Id $owner.ProcessId
     }
@@ -1062,7 +1567,9 @@ function ConvertTo-StackExport {
     $lines.Add('# ShowStack export')
     $lines.Add('')
     $lines.Add(("Generated {0:yyyy-MM-dd HH:mm} on {1}{2}." -f (Get-Date), $env:COMPUTERNAME, $script:OsDescription))
+    $apps = @($rows | Where-Object Section -eq 'Local apps')
     $summary = "$(@($tools | Where-Object State -ne 'Red').Count) tools, $running of $($servers.Count) servers running"
+    if ($apps.Count) { $summary += ", $($apps.Count) local app$(if ($apps.Count -ne 1) { 's' })" }
     if ($problems) { $summary += ", $problems need attention" }
     $lines.Add("Summary: $summary.")
 
@@ -1108,6 +1615,15 @@ function ConvertTo-StackExport {
         $lines.Add("_$($Status.Hidden) hidden server(s) not listed._")
     }
 
+    if ($apps.Count) {
+        $lines.Add('')
+        $lines.Add("## Local apps ($($apps.Count))")
+        $lines.Add('')
+        $lines.Add('| App | Status | URL | How it was found |')
+        $lines.Add('|---|---|---|---|')
+        foreach ($row in $apps) { $lines.Add("| $(& $cell $row.Name) | $($stateWord[$row.State]) | $(& $cell $row.Url) | $(& $cell $row.Detail) |") }
+    }
+
     $others = @($rows | Where-Object Section -eq 'Other local servers')
     if ($others.Count) {
         $lines.Add('')
@@ -1134,4 +1650,5 @@ function Open-DevTool {
 }
 
 Export-ModuleMember -Function Get-WidgetConfig, Update-DevInventory, Get-DevInventory, Get-DevStatus, Start-DevServer, Start-DockerEngine,
-    Restart-AllDev, Install-DevTool, Install-ServerDependencies, Open-DevTool, Hide-DevServer, Clear-HiddenServers, ConvertTo-StackExport
+    Restart-AllDev, Install-DevTool, Install-ServerDependencies, Open-DevTool, Hide-DevServer, Clear-HiddenServers, ConvertTo-StackExport,
+    Start-LocalContainer, Restart-LocalContainer

@@ -7,6 +7,7 @@
 import datetime
 import fnmatch
 import glob
+import http.client
 import json
 import os
 import platform
@@ -18,12 +19,14 @@ import socket
 import subprocess
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR = os.path.join(os.path.dirname(APP_DIR), 'assets')
 HOME = os.path.expanduser('~')
 CATALOG_PATH = os.path.join(APP_DIR, 'tool-catalog.json')
+LOCAL_APPS_PATH = os.path.join(APP_DIR, 'local-apps.json')
 CONFIG_DIR = os.path.join(os.environ.get('XDG_CONFIG_HOME') or os.path.join(HOME, '.config'), 'showstack')
 CONFIG_PATH = os.path.join(CONFIG_DIR, 'showstack.json')
 STATE_DIR = os.path.join(os.environ.get('XDG_STATE_HOME') or os.path.join(HOME, '.local', 'state'), 'showstack')
@@ -67,6 +70,7 @@ class Config:
     shell_folder: str = HOME
     titles: dict = field(default_factory=dict)
     ports: dict = field(default_factory=dict)
+    local_apps: list = field(default_factory=list)
 
 
 def default_config():
@@ -81,6 +85,7 @@ def default_config():
         'shellFolder': '~',
         'titles': {},
         'ports': {},
+        'localApps': [],
     }
 
 
@@ -117,6 +122,7 @@ def get_config():
         shell_folder=expand(value('shellFolder')),
         titles=titles,
         ports=ports,
+        local_apps=list(value('localApps')),
     )
 
 
@@ -397,6 +403,16 @@ def tool_install_command(tool):
     return None
 
 
+def version_from(path, source):
+    """A version read from where a tool sits (openwork-linux-x64-0.18.63/openwork) or from a VERSION file it ships,
+    for tools that must not be run just to ask them."""
+    text = path or ''
+    if source == 'file':
+        text = read_small_text(path, 4096) or ''
+    match = re.search(r'\d+\.\d+(\.\d+)*', text)
+    return match.group(0) if match else ''
+
+
 def tool_inventory(config):
     """Every catalog tool that is installed (green, or yellow if it is there but does not report a version),
     plus required tools that are missing (red). Version commands run in parallel."""
@@ -433,6 +449,9 @@ def tool_inventory(config):
         elif entry['flatpak_version'] is not None:
             version = entry['flatpak_version']
             detail = 'Version {} (Flatpak)'.format(version) if version else 'Installed (Flatpak)'
+        elif tool.get('versionFrom') in ('path', 'file'):
+            version = version_from(entry['path'], tool['versionFrom'])
+            detail = 'Version {}'.format(version) if version else 'Installed'
         elif not tool.get('versionArgs'):
             detail = 'Installed'
         elif entry['handle']:
@@ -914,9 +933,9 @@ def get_inventory():
 # --------------------------------------------------------------------------------------------------------- live status
 
 
-def status_item(section, name, state, detail='', group='', action='', url='', server=None):
+def status_item(section, name, state, detail='', group='', action='', url='', server=None, app=None):
     return {'Section': section, 'Group': group, 'Name': name, 'State': state, 'Detail': detail, 'Action': action,
-            'Url': url, 'Server': server}
+            'Url': url, 'Server': server, 'App': app}
 
 
 _children = []
@@ -1019,7 +1038,7 @@ def process_snapshot():
                 ports.setdefault(inodes[target[8:-1]], processes[pid])
     for port in wanted:
         ports.setdefault(port, UNKNOWN_PROCESS)
-    return {'Processes': processes, 'Ports': ports}
+    return {'Processes': processes, 'Ports': ports, 'Inodes': wanted}
 
 
 def ancestor_ids(process, processes):
@@ -1036,17 +1055,70 @@ def ancestor_ids(process, processes):
 def docker_state():
     docker = which('docker')
     if not docker:
-        return {'Path': None, 'Running': False, 'Version': '', 'Containers': {}, 'Error': ''}
+        return {'Path': None, 'Running': False, 'Version': '', 'Containers': {}, 'List': [], 'Error': ''}
     version = run_captured([docker, 'version', '--format', '{{.Server.Version}}'], timeout=8)
     containers = {}
+    details = []
     if version.exit_code == 0:
-        for line in run_captured([docker, 'ps', '--format', '{{.Labels}}'], timeout=8).output:
-            directory = re.search(r'com\.docker\.compose\.project\.working_dir=([^,]+)', line)
-            service = re.search(r'com\.docker\.compose\.service=([^,]+)', line)
-            if directory and service:
-                containers['{}|{}'.format(path_key(directory.group(1)), service.group(1).lower())] = True
+        details = docker_containers(docker)
+        for container in details:
+            if container['Running'] and container['ComposeDir'] and container['ComposeService']:
+                containers['{}|{}'.format(path_key(container['ComposeDir']), container['ComposeService'].lower())] = True
     return {'Path': docker, 'Running': version.exit_code == 0, 'Version': version.output[0] if version.output else '',
-            'Containers': containers, 'Error': ' '.join(version.output) if version.exit_code != 0 else ''}
+            'Containers': containers, 'List': details, 'Error': ' '.join(version.output) if version.exit_code != 0 else ''}
+
+
+CONTAINER_PORT_VARIABLES = ('PORT', 'HTTP_PORT', 'HTTPS_PORT', 'WEB_PORT', 'WEBUI_PORT', 'UI_PORT', 'LISTEN_PORT',
+                            'SERVER_PORT', 'APP_PORT', 'API_PORT')
+
+
+def docker_containers(docker):
+    """Every container, running or not: its name and image, the host ports it publishes, the ports it says it
+    serves (EXPOSE and a PORT-style variable; what a --network=host container listens on), and its compose labels."""
+    ids = [line for line in run_captured([docker, 'ps', '-aq'], timeout=8).output if re.match(r'^[0-9a-f]{6,}$', line)]
+    if not ids:
+        return []
+    try:
+        result = subprocess.run([docker, 'inspect'] + ids, capture_output=True, timeout=15, stdin=subprocess.DEVNULL)
+        inspected = json.loads(result.stdout.decode('utf-8', 'replace')) if result.returncode == 0 else []
+    except (OSError, subprocess.SubprocessError, ValueError):
+        inspected = []
+    containers = []
+    for data in inspected if isinstance(inspected, list) else []:
+        config = data.get('Config') or {}
+        state = data.get('State') or {}
+        host_config = data.get('HostConfig') or {}
+        labels = config.get('Labels') or {}
+        env = {}
+        for item in config.get('Env') or []:
+            key, _, value = str(item).partition('=')
+            env[key] = value
+        published = set()
+        for bindings in ((data.get('NetworkSettings') or {}).get('Ports') or {}).values():
+            for binding in bindings or []:
+                if str((binding or {}).get('HostPort', '')).isdigit():
+                    published.add(int(binding['HostPort']))
+        exposed = set()
+        for key in list((config.get('ExposedPorts') or {}).keys()) + list((host_config.get('PortBindings') or {}).keys()):
+            match = re.match(r'(\d+)', str(key))
+            if match:
+                exposed.add(int(match.group(1)))
+        for key in CONTAINER_PORT_VARIABLES:
+            if str(env.get(key, '')).isdigit():
+                exposed.add(int(env[key]))
+        containers.append({
+            'Id': str(data.get('Id') or '')[:12],
+            'Name': str(data.get('Name') or '').lstrip('/'),
+            'Image': str(config.get('Image') or ''),
+            'Running': bool(state.get('Running')),
+            'Status': str(state.get('Status') or ''),
+            'HostNetwork': str(host_config.get('NetworkMode') or '') == 'host',
+            'Published': sorted(published),
+            'Exposed': sorted(p for p in exposed if 0 < p < 65536),
+            'ComposeDir': str(labels.get('com.docker.compose.project.working_dir') or ''),
+            'ComposeService': str(labels.get('com.docker.compose.service') or ''),
+        })
+    return containers
 
 
 def systemd_unit(unit, user=False):
@@ -1117,7 +1189,7 @@ def server_dependencies_ok(server):
     return bool(find_upward(server['Dir'], ['node_modules/.bin/{}'.format(server['Bin'])], server['GroupPath']))
 
 
-def server_status_items(servers, snapshot, docker, hidden):
+def server_status_items(servers, snapshot, docker, hidden, apps=None, owned=None):
     started = started_record()
     visible = [s for s in servers if s and s['Key'] not in hidden]
     claims = {}
@@ -1125,7 +1197,7 @@ def server_status_items(servers, snapshot, docker, hidden):
         claims[int(server['Port'])] = 1 + claims.get(int(server['Port']), 0)
 
     rows = []
-    owned = set()
+    owned = set() if owned is None else owned
     for server in visible:
         port = int(server['Port'])
         common = {'section': 'Servers', 'group': server['Project'], 'name': server['Label'],
@@ -1140,7 +1212,7 @@ def server_status_items(servers, snapshot, docker, hidden):
                 owned.add(port)
                 rows.append(status_item(state='Green', detail='Running - {}'.format(where), action='Restart', **common))
             elif owner:
-                rows.append(status_item(state='Yellow', detail='Port {} is in use by {} - {}'.format(port, owner['name'], server['Source']), **common))
+                rows.append(status_item(state='Yellow', detail='Port {} is in use by {} - {}'.format(port, port_holder(port, owner, apps), server['Source']), **common))
             else:
                 rows.append(status_item(state='Yellow', detail='Stopped - {}'.format(where), action='Start', **common))
             continue
@@ -1162,11 +1234,25 @@ def server_status_items(servers, snapshot, docker, hidden):
             rows.append(status_item(state='Green', detail='Running (PID {}, probably this one) - {}'.format(owner['pid'], where), action='Restart', **common))
         else:
             state = 'Red' if server['Registered'] else 'Yellow'
-            who = '{} (PID {})'.format(owner['name'], owner['pid']) if owner['pid'] else owner['name']
+            who = port_holder(port, owner, apps)
             rows.append(status_item(state=state, detail='Port {} is in use by {} - {}'.format(port, who, server['Source']), **common))
 
+    return rows
+
+
+def port_holder(port, owner, apps):
+    """Who holds a port one of your servers wanted: the local app found on it, else the process, else 'another program'."""
+    app = (apps or {}).get('Ports', {}).get(port)
+    if app:
+        return '{} ({})'.format(app['Name'], app['Short'])
+    return '{} (PID {})'.format(owner['name'], owner['pid']) if owner['pid'] else owner['name']
+
+
+def other_server_items(snapshot, owned, apps=None):
+    """Developer runtimes you can see listening on ports that no project server and no local app explains."""
+    rows = []
     for port in sorted(snapshot['Ports']):
-        if port in owned:
+        if port in owned or (apps and port in apps['Ports']):
             continue
         owner = snapshot['Ports'][port]
         if not owner['pid']:
@@ -1179,6 +1265,285 @@ def server_status_items(servers, snapshot, docker, hidden):
         rows.append(status_item('Other local servers', 'Port {}'.format(port), 'Green',
                                 '{} (PID {}): {}'.format(what, owner['pid'], command_line), url='http://localhost:{}'.format(port)))
     return rows
+
+# ----------------------------------------------------------------------------------------------------------- local apps
+# One rule for everything else that listens on this computer. A port none of your project servers owns is attributed
+# the same way whatever holds it: a Docker container (its published ports, or with --network=host the ports its
+# environment and image name), a process you can see that is a known program, a port that answers HTTP the way a
+# known app does, or a port an app wrote into its own instance file. The known apps are data (local-apps.json, plus
+# localApps in showstack.json), so teaching ShowStack a new one is a line there, not code here.
+
+SYSTEM_PORT_LIMIT = 1024   # below this live system services (CUPS, DNS, rpcbind); containers publishing there are still seen
+PROBE_TIMEOUT = 0.8        # seconds to wait for one HTTP reply from localhost
+PROBE_LIMIT = 40           # ports asked over HTTP in one check
+PROBE_RETRY = 60           # seconds before a port that did not answer is asked again
+_probe_cache = {}
+
+
+def local_app_catalog(config):
+    try:
+        with open(LOCAL_APPS_PATH, encoding='utf-8') as handle:
+            apps = json.load(handle).get('apps', [])
+    except (OSError, ValueError) as error:
+        log('local-apps.json: {}'.format(error))
+        apps = []
+    merged = {}
+    for app in list(apps) + list(config.local_apps):
+        if app and app.get('name'):
+            merged[str(app['name']).lower()] = app   # settings entries override the catalog
+    return list(merged.values())
+
+
+def app_ports(app):
+    return [int(p) for p in (app.get('ports') or []) if str(p).isdigit()]
+
+
+def app_is_web(app):
+    return not app or str(app.get('protocol') or 'http') == 'http'
+
+
+def http_get(port, path, socket_key=''):
+    """Status, headers and the first 64 KB of http://localhost:port/path, or None when the port does not speak HTTP.
+    Remembered per listening socket, so an app is asked once, not at every check."""
+    key = (port, socket_key, path)
+    cached = _probe_cache.get(key)
+    if cached and (cached[1] is not None or time.monotonic() - cached[0] < PROBE_RETRY):
+        return cached[1]
+    result = None
+    connection = http.client.HTTPConnection('localhost', port, timeout=PROBE_TIMEOUT)
+    try:
+        connection.request('GET', path, headers={'User-Agent': 'ShowStack',
+                                                 'Accept': 'application/json, text/html;q=0.9, */*;q=0.5'})
+        response = connection.getresponse()
+        body = response.read(65536).decode('utf-8', 'replace')
+        result = {'Status': response.status, 'Headers': {k.lower(): v for k, v in response.getheaders()}, 'Body': body}
+    except (OSError, http.client.HTTPException, ValueError):
+        result = None
+    finally:
+        connection.close()
+    if len(_probe_cache) > 4000:
+        _probe_cache.clear()
+    _probe_cache[key] = (time.monotonic(), result)
+    return result
+
+
+def app_matches_process(app, owner):
+    if not owner or not owner['pid']:
+        return False
+    try:
+        if app.get('process') and re.search(str(app['process']), runtime_name(owner), re.I):
+            return True
+        return bool(app.get('cmdline') and re.search(str(app['cmdline']), owner['cmdline'], re.I))
+    except re.error:
+        return False
+
+
+def app_matches_image(app, image):
+    try:
+        return bool(app.get('image') and image and re.search(str(app['image']), image, re.I))
+    except re.error:
+        return False
+
+
+def app_matches_http(app, port, socket_key):
+    for probe in app.get('http') or []:
+        response = http_get(port, str(probe.get('path') or '/'), socket_key)
+        if not response:
+            continue
+        text = response['Body'] + '\n' + '\n'.join('{}: {}'.format(k, v) for k, v in response['Headers'].items())
+        try:
+            if re.search(str(probe.get('match') or '.'), text, re.I | re.S):
+                return True
+        except re.error:
+            continue
+    return False
+
+
+def instance_file_ports(app):
+    """Port -> pid (or None) from a JSON file an app writes about itself: every number under a key ending in 'port',
+    with the nearest 'pid' beside it."""
+    text = read_small_text(expand(app.get('instanceFile') or ''), 1048576) if app.get('instanceFile') else None
+    if not text:
+        return {}
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return {}
+    found = {}
+
+    def walk(node, pid):
+        if isinstance(node, dict):
+            if isinstance(node.get('pid'), int):
+                pid = node['pid']
+            for key, value in node.items():
+                if str(key).lower().endswith('port') and isinstance(value, int) and 0 < value < 65536:
+                    found[value] = pid
+                else:
+                    walk(value, pid)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value, pid)
+    walk(data, None)
+    return found
+
+
+def page_title(response):
+    """What a web page calls itself, for a web app no signature names."""
+    match = re.search(r'<title[^>]*>\s*([^<]{1,80}?)\s*</title>', response['Body'], re.I | re.S)
+    if match:
+        return re.sub(r'\s+', ' ', match.group(1))
+    server = response['Headers'].get('server', '')
+    return server.split('/')[0].strip() if server else ''
+
+
+def detect_local_apps(snapshot, docker, config, servers):
+    """Everything listening here that is not one of your project servers, attributed. Returns {'Ports': port -> app,
+    'Others': apps with no port of their own (containers publishing none, stopped containers)}. An app record:
+    Name, How (the full story for the row), Short (for 'port in use by'), Ports, Web, Action, Container, State, Pid."""
+    catalog = local_app_catalog(config)
+    sockets = snapshot.get('Inodes') or {}
+    ports = snapshot['Ports']
+    project_compose = {'{}|{}'.format(path_key(s['Dir']), str(s['Service']).lower()) for s in servers if s and s['Kind'] == 'compose'}
+    found = {}
+    others = []
+
+    def socket_key(port):
+        return ','.join(sorted(sockets.get(port, ())))
+
+    def app_record(name, how, short, port=None, web=True, action='', container=None, state='Green', pid=0):
+        return {'Name': name, 'How': how, 'Short': short, 'Ports': [port] if port else [], 'Web': web, 'Action': action,
+                'Container': container, 'State': state, 'Pid': pid}
+
+    # 1. Docker containers: the ports they publish, or with host networking the ports they name that are listening.
+    unseen = {p for p, owner in ports.items() if not owner['pid']}
+    for container in docker.get('List') or []:
+        if '{}|{}'.format(path_key(container['ComposeDir']), container['ComposeService'].lower()) in project_compose:
+            continue   # a compose service of one of your projects: it is listed under Servers
+        app = next((a for a in catalog if app_matches_image(a, container['Image'])), None)
+        name = app['name'] if app else container['Name']
+        short = 'Docker container {}'.format(container['Name'])
+        how = '{}, image {}'.format(short, container['Image'])
+        if not container['Running']:
+            if container['Exposed'] or container['Published']:
+                others.append(app_record(name, 'Stopped; Start runs docker start {} - {}'.format(container['Name'], how), short,
+                                         web=False, action='Start', container=container['Name'], state='Yellow'))
+            continue
+        if container['HostNetwork']:
+            wanted = set(container['Exposed']) | set(app_ports(app) if app else [])
+            container_ports = sorted(p for p in wanted if p in unseen)
+            how += ', host network'
+        else:
+            container_ports = list(container['Published'])
+        if not container_ports:
+            note = ', port not known' if container['HostNetwork'] else ', no port published to this computer'
+            others.append(app_record(name, how + note, short, web=False, action='Restart', container=container['Name']))
+            continue
+        record = app_record(name, how, short, web=app_is_web(app), action='Restart', container=container['Name'])
+        for port in container_ports:
+            if port not in found:
+                found[port] = record
+                record['Ports'].append(port)
+
+    # 2. Processes you can see that are a known program (ollama serve, n8n, the OpenWork engine...).
+    for port, owner in sorted(ports.items()):
+        if port in found or not owner['pid']:
+            continue
+        app = next((a for a in catalog if app_matches_process(a, owner)), None)
+        if app:
+            found[port] = app_record(app['name'], '{} (PID {})'.format(runtime_name(owner), owner['pid']),
+                                     'PID {}'.format(owner['pid']), port, web=app_is_web(app), pid=owner['pid'])
+
+    # 3. Ports an app recorded in its own instance file.
+    for app in catalog:
+        for port, pid in instance_file_ports(app).items():
+            if port in found or port not in ports or (pid and not process_alive(pid)):
+                continue
+            where = str(app['instanceFile'])
+            found[port] = app_record(app['name'], 'Recorded in {}{}'.format(where, ' (PID {})'.format(pid) if pid else ''),
+                                     'from {}'.format(os.path.basename(where)), port, web=app_is_web(app), pid=pid or 0)
+
+    # 4. Ports held by something you cannot see (a service, root, a container), or by a program that is not a
+    #    developer runtime: ask them over HTTP, known apps first, then whatever the page calls itself.
+    def unexplained(port):
+        owner = ports[port]
+        return port not in found and port >= SYSTEM_PORT_LIMIT and (not owner['pid'] or runtime_name(owner) not in DEV_RUNTIMES)
+
+    def identify(port):
+        key = socket_key(port)
+        root = http_get(port, '/', key)
+        if root is None:
+            return None
+        usual = [a for a in catalog if a.get('http') and port in app_ports(a)]
+        rest = [a for a in catalog if a.get('http') and a not in usual]
+        for app in usual + rest:
+            if app_matches_http(app, port, key):
+                return app, root
+        return None, root
+
+    candidates = [p for p in sorted(ports) if unexplained(p)][:PROBE_LIMIT]
+    answers = []
+    if candidates:
+        with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as pool:
+            answers = list(pool.map(identify, candidates))
+    for port, answer in zip(candidates, answers):
+        if answer is None:
+            continue
+        app, root = answer
+        owner = ports[port]
+        if owner['pid']:
+            who, short = '{} (PID {})'.format(runtime_name(owner), owner['pid']), 'PID {}'.format(owner['pid'])
+        else:
+            who, short = 'held by a program you cannot see (a service, root, or a container)', 'not your process'
+        if app:
+            found[port] = app_record(app['name'], 'Answers like {}; {}'.format(app['name'], who), short, port, pid=owner['pid'])
+        else:
+            found[port] = app_record(page_title(root) or 'Web app on port {}'.format(port),
+                                     'A web app no signature names; {}'.format(who), short, port, pid=owner['pid'])
+
+    # 5. A tcp app on its usual port, held by a program you cannot see, is probably that app (PostgreSQL on 5432).
+    for port, owner in sorted(ports.items()):
+        if port in found or owner['pid'] or port < SYSTEM_PORT_LIMIT:
+            continue
+        app = next((a for a in catalog if not app_is_web(a) and port in app_ports(a)), None)
+        if app:
+            found[port] = app_record(app['name'], 'Probably: {} is its usual port, held by a program you cannot see'.format(port),
+                                     'probably, by its port', port, web=False)
+    return {'Ports': found, 'Others': others}
+
+
+def local_app_items(apps, owned):
+    rows = []
+    seen = set()
+    for port in sorted(apps['Ports']):
+        app = apps['Ports'][port]
+        if port in owned or id(app) in seen:
+            continue
+        seen.add(id(app))
+        its_ports = [p for p in app['Ports'] if p not in owned] or [port]
+        detail = '{} - port{} {}'.format(app['How'], 's' if len(its_ports) > 1 else '', ', '.join(str(p) for p in its_ports))
+        url = 'http://localhost:{}'.format(its_ports[0]) if app['Web'] else ''
+        rows.append(status_item('Local apps', app['Name'], app['State'], detail, action=app['Action'], url=url, app=app))
+    for app in apps['Others']:
+        rows.append(status_item('Local apps', app['Name'], app['State'], app['How'], action=app['Action'], app=app))
+    return rows
+
+
+def start_container(name):
+    container_command('start', name)
+
+
+def restart_container(name):
+    container_command('restart', name)
+
+
+def container_command(verb, name):
+    docker = which('docker')
+    if not docker:
+        raise RuntimeError('Docker is not installed.')
+    result = run_captured([docker, verb, name], timeout=120)
+    if result.exit_code != 0:
+        raise RuntimeError('docker {} {}: {}'.format(verb, name, ' '.join(result.output) or 'failed'))
+    _probe_cache.clear()
 
 
 def hidden_servers():
@@ -1195,11 +1560,15 @@ def get_status(inventory=None):
     hidden = hidden_servers()
     snapshot = process_snapshot()
     docker = docker_state()
+    apps = detect_local_apps(snapshot, docker, get_config(), inventory['Servers'])
     rows = []
     docker_row = docker_status_item(docker)
     if docker_row:
         rows.append(docker_row)
-    rows += server_status_items(inventory['Servers'], snapshot, docker, hidden)
+    owned = set()
+    rows += server_status_items(inventory['Servers'], snapshot, docker, hidden, apps, owned)
+    rows += local_app_items(apps, owned)
+    rows += other_server_items(snapshot, owned, apps)
     return {
         'Tools': list(inventory['Tools']),
         'Rows': rows,
@@ -1467,7 +1836,10 @@ def export_markdown(status):
 
     lines = ['# ShowStack export', '',
              'Generated {:%Y-%m-%d %H:%M} on {}{}.'.format(datetime.datetime.now(), socket.gethostname(), os_description())]
+    apps = [r for r in rows if r['Section'] == 'Local apps']
     summary = '{} tools, {} of {} servers running'.format(installed, running, len(servers))
+    if apps:
+        summary += ', {} local app{}'.format(len(apps), '' if len(apps) == 1 else 's')
     if problems:
         summary += ', {} need attention'.format(problems)
     lines.append('Summary: {}.'.format(summary))
@@ -1509,6 +1881,11 @@ def export_markdown(status):
                                                                       cell(command), cell(server['Dir']), cell(server['Source'])))
     if status['Hidden']:
         lines += ['', '_{} hidden server(s) not listed._'.format(status['Hidden'])]
+
+    if apps:
+        lines += ['', '## Local apps ({})'.format(len(apps)), '', '| App | Status | URL | How it was found |', '|---|---|---|---|']
+        for row in apps:
+            lines.append('| {} | {} | {} | {} |'.format(cell(row['Name']), state_word[row['State']], cell(row['Url']), cell(row['Detail'])))
 
     others = [r for r in rows if r['Section'] == 'Other local servers']
     if others:

@@ -26,7 +26,7 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR = os.path.join(os.path.dirname(APP_DIR), 'assets')
 HOME = os.path.expanduser('~')
 CATALOG_PATH = os.path.join(APP_DIR, 'tool-catalog.json')
-LOCAL_APPS_PATH = os.path.join(APP_DIR, 'local-apps.json')
+LOCAL_APPS_PATH = os.path.join(os.path.dirname(APP_DIR), 'local-apps.json')   # shared with the Windows version
 CONFIG_DIR = os.path.join(os.environ.get('XDG_CONFIG_HOME') or os.path.join(HOME, '.config'), 'showstack')
 CONFIG_PATH = os.path.join(CONFIG_DIR, 'showstack.json')
 STATE_DIR = os.path.join(os.environ.get('XDG_STATE_HOME') or os.path.join(HOME, '.local', 'state'), 'showstack')
@@ -1360,30 +1360,32 @@ def app_matches_http(app, port, socket_key):
 
 
 def instance_file_ports(app):
-    """Port -> pid (or None) from a JSON file an app writes about itself: every number under a key ending in 'port',
-    with the nearest 'pid' beside it."""
-    text = read_small_text(expand(app.get('instanceFile') or ''), 1048576) if app.get('instanceFile') else None
-    if not text:
-        return {}
-    try:
-        data = json.loads(text)
-    except ValueError:
-        return {}
+    """Port -> (pid or None, file) from the JSON files an app writes about itself (one path or a list, the Windows
+    ones simply not existing here): every number under a key ending in 'port', with the nearest 'pid' beside it."""
     found = {}
+    candidates = app.get('instanceFile') or []
+    for candidate in candidates if isinstance(candidates, list) else [candidates]:
+        text = read_small_text(expand(candidate), 1048576) if candidate else None
+        if not text:
+            continue
+        try:
+            data = json.loads(text)
+        except ValueError:
+            continue
 
-    def walk(node, pid):
-        if isinstance(node, dict):
-            if isinstance(node.get('pid'), int):
-                pid = node['pid']
-            for key, value in node.items():
-                if str(key).lower().endswith('port') and isinstance(value, int) and 0 < value < 65536:
-                    found[value] = pid
-                else:
+        def walk(node, pid):
+            if isinstance(node, dict):
+                if isinstance(node.get('pid'), int):
+                    pid = node['pid']
+                for key, value in node.items():
+                    if str(key).lower().endswith('port') and isinstance(value, int) and 0 < value < 65536:
+                        found[value] = (pid, str(candidate))
+                    else:
+                        walk(value, pid)
+            elif isinstance(node, list):
+                for value in node:
                     walk(value, pid)
-        elif isinstance(node, list):
-            for value in node:
-                walk(value, pid)
-    walk(data, None)
+        walk(data, None)
     return found
 
 
@@ -1455,10 +1457,9 @@ def detect_local_apps(snapshot, docker, config, servers):
 
     # 3. Ports an app recorded in its own instance file.
     for app in catalog:
-        for port, pid in instance_file_ports(app).items():
+        for port, (pid, where) in instance_file_ports(app).items():
             if port in found or port not in ports or (pid and not process_alive(pid)):
                 continue
-            where = str(app['instanceFile'])
             found[port] = app_record(app['name'], 'Recorded in {}{}'.format(where, ' (PID {})'.format(pid) if pid else ''),
                                      'from {}'.format(os.path.basename(where)), port, web=app_is_web(app), pid=pid or 0)
 

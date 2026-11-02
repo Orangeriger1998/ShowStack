@@ -1,5 +1,5 @@
 {
-  "_about": "Developer tools the widget looks for. commands: program names searched on PATH. paths: usual install locations (%VAR% and * allowed). versionArgs: run to read the version; omit for GUI apps (the file version is used instead, the app is never run). open: the chip opens the app when clicked. winget / install: how the Install button installs it.",
+  "_about": "Developer tools the widget looks for. commands: program names searched on PATH. paths: usual install locations (%VAR% and * allowed). versionArgs: run to read the version; omit for GUI apps (the file version is used instead, the app is never run). versionFrom: path (the version in the install path, like foo-1.2.3\\foo.exe) or file (the first version in the file at paths, like a VERSION file) when there is neither. open: the chip opens the app when clicked. winget / install: how the Install button installs it.",
   "tools": [
     { "name": "Node.js", "category": "Languages", "commands": ["node"], "paths": ["%ProgramFiles%\\nodejs\\node.exe"], "versionArgs": ["--version"], "winget": "OpenJS.NodeJS.LTS" },
     { "name": "Python", "category": "Languages", "commands": ["python", "python3"], "paths": ["%LOCALAPPDATA%\\Programs\\Python\\Python3*\\python.exe", "%ProgramFiles%\\Python3*\\python.exe"], "versionArgs": ["--version"], "winget": "Python.Python.3.12" },
@@ -78,6 +78,10 @@
     { "name": "sqlcmd", "category": "Databases", "commands": ["sqlcmd"], "versionArgs": ["-?"] },
 
     { "name": "Claude Code", "category": "Editors & AI", "commands": ["claude"], "paths": ["%USERPROFILE%\\.local\\bin\\claude.exe"], "versionArgs": ["--version"], "install": "irm https://claude.ai/install.ps1 | iex" },
+    { "name": "OpenCode", "category": "Editors & AI", "commands": ["opencode"], "paths": ["%USERPROFILE%\\.opencode\\bin\\opencode.exe", "%APPDATA%\\npm\\opencode.cmd"], "versionArgs": ["--version"], "install": "npm install -g opencode-ai" },
+    { "name": "OpenWork", "category": "Editors & AI", "paths": ["%LOCALAPPDATA%\\Programs\\OpenWork\\OpenWork.exe", "%LOCALAPPDATA%\\OpenWork\\OpenWork.exe", "%ProgramFiles%\\OpenWork\\OpenWork.exe"], "open": "app" },
+    { "name": "gbrain", "category": "Editors & AI", "commands": ["gbrain"], "paths": ["%USERPROFILE%\\.bun\\bin\\gbrain.exe", "%USERPROFILE%\\.bun\\bin\\gbrain.cmd"], "versionArgs": ["--version"], "install": "bun install -g github:garrytan/gbrain" },
+    { "name": "gstack", "category": "Editors & AI", "paths": ["%USERPROFILE%\\.claude\\skills\\gstack\\VERSION"], "versionFrom": "file", "install": "git clone --single-branch --depth 1 https://github.com/garrytan/gstack.git \"$env:USERPROFILE\\.claude\\skills\\gstack\"" },
     { "name": "Codex CLI", "category": "Editors & AI", "commands": ["codex"], "versionArgs": ["--version"], "install": "npm install -g @openai/codex" },
     { "name": "Gemini CLI", "category": "Editors & AI", "commands": ["gemini"], "versionArgs": ["--version"], "install": "npm install -g @google/gemini-cli" },
     { "name": "Copilot CLI", "category": "Editors & AI", "commands": ["copilot"], "versionArgs": ["--version"], "install": "npm install -g @github/copilot" },

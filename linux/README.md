@@ -42,7 +42,6 @@ the whole stack on the clipboard as Markdown, hiding servers, and opening folder
 | Docker | Starts Docker Desktop | Starts the Docker service (asks for your password), rootless Docker or Docker Desktop for Linux, whichever you have; tells you when your user is not in the `docker` group |
 | Folder icon | File Explorer | Your file manager (Nemo, Caja, Thunar...) |
 | Second launch | Ignored | Brings the open widget to the front |
-| What else listens | Developer runtimes you can see, under "Other local servers" | Also Docker containers and known local apps, under **Local apps** (see below) |
 
 The widget reads the `PATH` of your interactive shell (so Node from nvm, Rust from rustup and anything your `.bashrc`
 adds are found even though a desktop launcher does not run `.bashrc`) and also looks in the usual places tools
@@ -92,7 +91,8 @@ by one rule, whatever holds the port:
 A port your own server wanted no longer reads "in use by another program (not yours)" but, for example, "in use by
 Open WebUI (Docker container open-webui)".
 
-The known apps are data: `linux/local-apps.json`, with the fields explained at the top of the file. To add one, or
+The known apps are data: `local-apps.json` at the top of the repository, shared with the Windows version, with the
+fields explained at the top of the file. To add one, or
 change how one is recognised, put an entry with the same fields in `localApps` in `showstack.json`:
 
 ```json

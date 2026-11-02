@@ -17,7 +17,7 @@ ShowStack is a floating, always-on-top widget for Windows and Linux Mint, for pe
 week, a FastAPI service, a docker-compose database, the servers an AI coding assistant spun up and you forgot about.
 It answers three questions at a glance:
 
-- **What do I have installed?** A box for each known developer tool it finds (99 on Windows, 109 on Linux): languages, package managers,
+- **What do I have installed?** A box for each known developer tool it finds (103 on Windows, 109 on Linux): languages, package managers,
   Git, Docker, cloud CLIs, databases, editors, AI coding tools, local LLMs (Ollama, LM Studio, llama.cpp) and typesetting (Typst, Tectonic), with
   versions.
 - **What can I run, and is it running?** It reads your project code and lists every localhost server it can start,
@@ -44,13 +44,13 @@ Downloads and install steps for both systems: **[orangeriger1998.github.io/ShowS
 - **Required tools.** Mark tools you can't work without; if one goes missing it turns red and one click installs it
   (winget or the vendor's official installer, in a window you can watch).
 - **Docker aware.** Shows the engine, starts Docker Desktop, and runs compose services one by one.
-- **Sees what else is listening (Linux; Windows next).** Every localhost port that none of your projects explains is
+- **Sees what else is listening.** Every localhost port that none of your projects explains is
   attributed by one rule, whatever holds it: a Docker container (`--network=host` ones too), a process that is a known
   program, a port that answers HTTP the way a known app does, or a port an app wrote into its own instance file.
   Open WebUI, Ollama, LM Studio, OpenWork, n8n, Grafana, PostgreSQL and some forty others come out of the box, in a
   **Local apps** section with a link and, for containers, Start and Restart. "Port 3000 is in use by another program"
   becomes "in use by Open WebUI (Docker container open-webui)". The known apps are data in
-  `linux/local-apps.json`; add your own in the settings. It asks only `localhost`, never anything off your computer.
+  `local-apps.json`; add your own in the settings. It asks only `localhost`, never anything off your computer.
 - **Local LLMs.** Shows whether your Ollama, LM Studio or llama.cpp model server is up and on which port; register it
   once and it gets Start and Restart buttons like any other server.
 - **One-click export.** The copy icon puts your whole stack on the clipboard as Markdown, ready to paste into an AI

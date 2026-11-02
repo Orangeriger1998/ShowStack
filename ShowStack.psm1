@@ -1008,47 +1008,114 @@ function Test-AppIsWeb {
     return ($protocol -eq 'http')
 }
 
+function New-LocalHttpRequest {
+    # A GET for http://localhost:port/path with short timeouts, no proxy and no redirects. Localhost only.
+    param([int]$Port, [string]$Path = '/')
+    $request = [Net.HttpWebRequest]::Create("http://localhost:$Port$Path")
+    $request.Method = 'GET'
+    $request.Timeout = $script:ProbeTimeoutMilliseconds
+    $request.ReadWriteTimeout = $script:ProbeTimeoutMilliseconds
+    $request.UserAgent = 'ShowStack'
+    $request.Accept = 'application/json, text/html;q=0.9, */*;q=0.5'
+    $request.AllowAutoRedirect = $false
+    $request.KeepAlive = $false
+    $request.Proxy = $null
+    return $request
+}
+
+function Get-WebExceptionResponse {
+    # The reply inside a failed request (a 404 still shows the port speaks HTTP), or $null when there was none.
+    param($Exception)
+    while ($Exception -and $Exception -isnot [Net.WebException]) { $Exception = $Exception.InnerException }
+    if ($Exception -and $Exception.Response) { return $Exception.Response }
+    return $null
+}
+
+function Read-LocalHttpResponse {
+    # Status, headers and the first 64 KB of a reply, or $null when there is none to read.
+    param($Response)
+    if (-not $Response) { return $null }
+    try {
+        $reader = New-Object IO.StreamReader($Response.GetResponseStream(), [Text.Encoding]::UTF8)
+        $buffer = New-Object char[] 65536
+        $count = $reader.Read($buffer, 0, $buffer.Length)
+        $body = if ($count -gt 0) { New-Object string($buffer, 0, $count) } else { '' }
+        $headers = @{}
+        foreach ($name in @($Response.Headers.AllKeys)) { $headers[$name.ToLowerInvariant()] = "$($Response.Headers[$name])" }
+        return [pscustomobject]@{ Status = [int]$Response.StatusCode; Headers = $headers; Body = $body }
+    }
+    catch { return $null }
+    finally { $Response.Close() }
+}
+
+function Test-ProbeRemembered {
+    # Whether the cache already answers for a port, socket and path: an answer is kept for as long as the socket
+    # lives, a silence for ProbeRetrySeconds.
+    param([string]$Key)
+    if (-not $script:ProbeCache.ContainsKey($Key)) { return $false }
+    $cached = $script:ProbeCache[$Key]
+    return ($null -ne $cached.Result -or ([DateTime]::UtcNow - $cached.When).TotalSeconds -lt $script:ProbeRetrySeconds)
+}
+
+function Set-ProbeRemembered {
+    param([string]$Key, $Result)
+    if ($script:ProbeCache.Count -gt 4000) { $script:ProbeCache.Clear() }
+    $script:ProbeCache[$Key] = [pscustomobject]@{ When = [DateTime]::UtcNow; Result = $Result }
+}
+
 function Invoke-LocalHttpGet {
     # Status, headers and the first 64 KB of http://localhost:port/path, or $null when the port does not speak HTTP.
     # Remembered per listening socket, so an app is asked once, not at every check. Localhost only, never a proxy.
     param([int]$Port, [string]$Path = '/', [string]$SocketKey = '')
 
     $key = "$Port|$SocketKey|$Path"
-    if ($script:ProbeCache.ContainsKey($key)) {
-        $cached = $script:ProbeCache[$key]
-        if ($null -ne $cached.Result -or ([DateTime]::UtcNow - $cached.When).TotalSeconds -lt $script:ProbeRetrySeconds) { return $cached.Result }
-    }
+    if (Test-ProbeRemembered -Key $key) { return $script:ProbeCache[$key].Result }
     $result = $null
-    $response = $null
     try {
-        $request = [Net.HttpWebRequest]::Create("http://localhost:$Port$Path")
-        $request.Method = 'GET'
-        $request.Timeout = $script:ProbeTimeoutMilliseconds
-        $request.ReadWriteTimeout = $script:ProbeTimeoutMilliseconds
-        $request.UserAgent = 'ShowStack'
-        $request.Accept = 'application/json, text/html;q=0.9, */*;q=0.5'
-        $request.AllowAutoRedirect = $false
-        $request.KeepAlive = $false
-        $request.Proxy = $null
+        $request = New-LocalHttpRequest -Port $Port -Path $Path
+        $response = $null
         try { $response = $request.GetResponse() }
-        catch {
-            $exception = $_.Exception
-            if ($exception -isnot [Net.WebException] -and $exception.InnerException -is [Net.WebException]) { $exception = $exception.InnerException }
-            if ($exception -is [Net.WebException] -and $exception.Response) { $response = $exception.Response } else { throw }
-        }
-        $reader = New-Object IO.StreamReader($response.GetResponseStream(), [Text.Encoding]::UTF8)
-        $buffer = New-Object char[] 65536
-        $count = $reader.Read($buffer, 0, $buffer.Length)
-        $body = if ($count -gt 0) { New-Object string($buffer, 0, $count) } else { '' }
-        $headers = @{}
-        foreach ($name in @($response.Headers.AllKeys)) { $headers[$name.ToLowerInvariant()] = "$($response.Headers[$name])" }
-        $result = [pscustomobject]@{ Status = [int]$response.StatusCode; Headers = $headers; Body = $body }
+        catch { $response = Get-WebExceptionResponse -Exception $_.Exception }
+        $result = Read-LocalHttpResponse -Response $response
     }
     catch { $result = $null }
-    finally { if ($response) { $response.Close() } }
-    if ($script:ProbeCache.Count -gt 4000) { $script:ProbeCache.Clear() }
-    $script:ProbeCache[$key] = [pscustomobject]@{ When = [DateTime]::UtcNow; Result = $result }
+    Set-ProbeRemembered -Key $key -Result $result
     return $result
+}
+
+function Invoke-LocalHttpProbes {
+    # Asks several ports for / at the same time and waits once for all of them (the Linux engine uses a thread pool
+    # for the same reason), so forty silent ports cost one timeout, not forty. The replies land in the cache that
+    # Invoke-LocalHttpGet reads; a request still unanswered at the deadline is dropped and remembered as silence.
+    param([int[]]$Ports, [hashtable]$SocketKeys)
+
+    $pending = [Collections.Generic.List[object]]::new()
+    foreach ($port in $Ports) {
+        $key = "$port|$($SocketKeys[[int]$port])|/"
+        if (Test-ProbeRemembered -Key $key) { continue }
+        try {
+            $request = New-LocalHttpRequest -Port $port -Path '/'
+            $pending.Add([pscustomobject]@{ Key = $key; Request = $request; Task = $request.GetResponseAsync() })
+        }
+        catch { Set-ProbeRemembered -Key $key -Result $null }
+    }
+    if (-not $pending.Count) { return }
+    $tasks = [Threading.Tasks.Task[]]@($pending | ForEach-Object { $_.Task })
+    try { [void][Threading.Tasks.Task]::WaitAll($tasks, $script:ProbeTimeoutMilliseconds) } catch { }
+    foreach ($entry in $pending) {
+        $result = $null
+        if ($entry.Task.IsCompleted) {
+            try {
+                $response = if ($entry.Task.Status -eq 'RanToCompletion') { $entry.Task.Result } else { Get-WebExceptionResponse -Exception $entry.Task.Exception }
+                $result = Read-LocalHttpResponse -Response $response
+            }
+            catch { $result = $null }
+        }
+        else {
+            try { $entry.Request.Abort() } catch { }
+        }
+        Set-ProbeRemembered -Key $entry.Key -Result $result
+    }
 }
 
 function Test-AppProcess {
@@ -1091,7 +1158,7 @@ function Get-InstanceFilePorts {
     $found = @{}
     foreach ($candidate in @($App.instanceFile)) {
         if (-not $candidate) { continue }
-        $path = [Environment]::ExpandEnvironmentVariables(("$candidate" -replace '^~', $env:USERPROFILE).Replace('/', [IO.Path]::DirectorySeparatorChar))
+        $path = [Environment]::ExpandEnvironmentVariables(("$candidate" -replace '^~', $env:USERPROFILE))   # Windows takes / as well as \
         $text = Read-SmallText -Path $path -MaxBytes 1048576
         if (-not $text) { continue }
         try { $data = $text | ConvertFrom-Json } catch { continue }
@@ -1219,6 +1286,7 @@ function Find-LocalApps {
         $owner = $ports[$_]
         (-not $found.ContainsKey([int]$_)) -and ([int]$_ -ge $script:SystemPortLimit) -and ((-not $owner.ProcessId) -or ((& $runtimeOf $owner) -notin $script:DevRuntimes))
     } | Select-Object -First $script:ProbeLimit)
+    Invoke-LocalHttpProbes -Ports @($candidates | ForEach-Object { [int]$_ }) -SocketKeys $sockets
     foreach ($port in $candidates) {
         $socketKey = "$($sockets[[int]$port])"
         $root = Invoke-LocalHttpGet -Port $port -Path '/' -SocketKey $socketKey
